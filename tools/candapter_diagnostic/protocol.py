@@ -11,10 +11,22 @@ from typing import Any
 BPS_STATUS_CAN_ID = 0x101
 BPS_TEMPERATURE_CAN_ID = 0x108
 BPS_ELECTRICAL_CAN_ID = 0x109
-POWERTRAIN_FAULT_CAN_ID = 0x505
+POWERTRAIN_ESTOP_FAULT_CAN_ID = 0x505
+BPS_UNDERVOLTAGE_FAULT_CAN_ID = 0x506
+BPS_OVERVOLTAGE_FAULT_CAN_ID = 0x507
+BPS_OVERCURRENT_FAULT_CAN_ID = 0x508
+BPS_OVERTEMPERATURE_FAULT_CAN_ID = 0x509
 FAULT_CLEAR_CAN_ID = 0x7EB
 
 FAULT_CLEAR_PAYLOAD = bytes.fromhex("03 7F 20 22 00 00 00 00")
+
+FAULT_STATUS_MESSAGES = {
+    POWERTRAIN_ESTOP_FAULT_CAN_ID: "E-stop",
+    BPS_UNDERVOLTAGE_FAULT_CAN_ID: "Cell undervoltage",
+    BPS_OVERVOLTAGE_FAULT_CAN_ID: "Cell overvoltage",
+    BPS_OVERCURRENT_FAULT_CAN_ID: "Pack overcurrent",
+    BPS_OVERTEMPERATURE_FAULT_CAN_ID: "Overtemperature",
+}
 
 CELL_VOLTAGE_MIN_V = 2.52
 CELL_VOLTAGE_MAX_V = 4.18
@@ -172,11 +184,11 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
                     * PACK_CURRENT_SCALE_A
                 ),
             }
-        elif frame.arbitration_id == POWERTRAIN_FAULT_CAN_ID:
+        elif frame.arbitration_id in FAULT_STATUS_MESSAGES:
             if frame.dlc != 1:
                 raise ValueError("expected DLC 1")
             active = bool(frame.data[0] & 0x01)
-            result["name"] = "Powertrain fault status"
+            result["name"] = FAULT_STATUS_MESSAGES[frame.arbitration_id]
             result["fields"] = {
                 "Fault active": active,
                 "Status": "FAULT" if active else "Healthy",
@@ -277,11 +289,17 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
     """Return every known fault condition with its current status."""
     rows: list[dict[str, Any]] = []
 
+    def status_from_message(can_id: int) -> str | None:
+        frame = latest.get(can_id)
+        if frame is None or frame.dlc != 1:
+            return None
+        return "FAULT" if frame.data[0] & 0x01 else "OK"
+
     def add(
         fault: str,
         source: str,
         value: str,
-        is_fault: bool | None,
+        is_fault: bool | str | None,
         limit: str,
     ) -> None:
         rows.append(
@@ -293,7 +311,11 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
                 "Status": (
                     "UNKNOWN"
                     if is_fault is None
-                    else ("FAULT" if is_fault else "OK")
+                    else (
+                        is_fault
+                        if isinstance(is_fault, str)
+                        else ("FAULT" if is_fault else "OK")
+                    )
                 ),
             }
         )
@@ -322,31 +344,32 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
             "High temperature",
             "0x108",
             f"{high_temp:.0f} °C",
-            not TEMPERATURE_MIN_C <= high_temp <= TEMPERATURE_MAX_C,
+            status_from_message(BPS_OVERTEMPERATURE_FAULT_CAN_ID)
+            or not TEMPERATURE_MIN_C <= high_temp <= TEMPERATURE_MAX_C,
             f"{TEMPERATURE_MIN_C:g}–{TEMPERATURE_MAX_C:g} °C",
         )
 
     electrical = latest.get(BPS_ELECTRICAL_CAN_ID)
     if electrical is None or electrical.dlc != 6:
         add(
-            "High cell over/undervoltage",
+            "Cell overvoltage",
             "0x109",
             "—",
-            None,
-            f"{CELL_VOLTAGE_MIN_V:.2f}–{CELL_VOLTAGE_MAX_V:.2f} V",
+            status_from_message(BPS_OVERVOLTAGE_FAULT_CAN_ID),
+            f"≤ {CELL_VOLTAGE_MAX_V:.2f} V",
         )
         add(
-            "Low cell over/undervoltage",
+            "Cell undervoltage",
             "0x109",
             "—",
-            None,
-            f"{CELL_VOLTAGE_MIN_V:.2f}–{CELL_VOLTAGE_MAX_V:.2f} V",
+            status_from_message(BPS_UNDERVOLTAGE_FAULT_CAN_ID),
+            f"≥ {CELL_VOLTAGE_MIN_V:.2f} V",
         )
         add(
             "Pack overcurrent",
             "0x109",
             "—",
-            None,
+            status_from_message(BPS_OVERCURRENT_FAULT_CAN_ID),
             f"≤ {PACK_CURRENT_MAX_A:g} A",
         )
     else:
@@ -358,39 +381,39 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
             * PACK_CURRENT_SCALE_A
         )
         add(
-            "High cell over/undervoltage",
+            "Cell overvoltage",
             "0x109",
             f"{high_v:.4f} V",
-            not CELL_VOLTAGE_MIN_V <= high_v <= CELL_VOLTAGE_MAX_V,
-            f"{CELL_VOLTAGE_MIN_V:.2f}–{CELL_VOLTAGE_MAX_V:.2f} V",
+            status_from_message(BPS_OVERVOLTAGE_FAULT_CAN_ID)
+            or high_v > CELL_VOLTAGE_MAX_V
+            or low_v > CELL_VOLTAGE_MAX_V,
+            f"≤ {CELL_VOLTAGE_MAX_V:.2f} V",
         )
         add(
-            "Low cell over/undervoltage",
+            "Cell undervoltage",
             "0x109",
             f"{low_v:.4f} V",
-            not CELL_VOLTAGE_MIN_V <= low_v <= CELL_VOLTAGE_MAX_V,
-            f"{CELL_VOLTAGE_MIN_V:.2f}–{CELL_VOLTAGE_MAX_V:.2f} V",
+            status_from_message(BPS_UNDERVOLTAGE_FAULT_CAN_ID)
+            or low_v < CELL_VOLTAGE_MIN_V
+            or high_v < CELL_VOLTAGE_MIN_V,
+            f"≥ {CELL_VOLTAGE_MIN_V:.2f} V",
         )
         add(
             "Pack overcurrent",
             "0x109",
             f"{current:.1f} A",
-            current > PACK_CURRENT_MAX_A,
+            status_from_message(BPS_OVERCURRENT_FAULT_CAN_ID)
+            or current > PACK_CURRENT_MAX_A,
             f"≤ {PACK_CURRENT_MAX_A:g} A",
         )
 
-    status = latest.get(POWERTRAIN_FAULT_CAN_ID)
-    if status is None or status.dlc != 1:
-        add("Powertrain combined fault", "0x505 bit 0", "—", None, "0")
-    else:
-        active = bool(status.data[0] & 0x01)
-        add(
-            "Powertrain combined fault",
-            "0x505 bit 0",
-            str(int(active)),
-            active,
-            "0",
-        )
+    add(
+        "E-stop",
+        "0x505",
+        "—",
+        status_from_message(POWERTRAIN_ESTOP_FAULT_CAN_ID),
+        "inactive",
+    )
 
     return rows
 

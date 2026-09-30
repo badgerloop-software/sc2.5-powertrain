@@ -40,6 +40,20 @@ class ProtocolTests(unittest.TestCase):
         decoded = decode_frame(frame)
         self.assertTrue(decoded["fields"]["Fault active"])
 
+    def test_specific_fault_status_decode(self) -> None:
+        cases = {
+            0x505: "E-stop",
+            0x506: "Cell undervoltage",
+            0x507: "Cell overvoltage",
+            0x508: "Pack overcurrent",
+            0x509: "Overtemperature",
+        }
+        for can_id, name in cases.items():
+            with self.subTest(can_id=hex(can_id)):
+                decoded = decode_frame(CANFrame(can_id, b"\x01", time.time()))
+                self.assertEqual(decoded["name"], name)
+                self.assertEqual(decoded["fields"]["Status"], "FAULT")
+
     def test_candapter_standard_frame_parse(self) -> None:
         frame = parse_candapter_frame("T109685CF833F7FFF")
         self.assertIsNotNone(frame)
@@ -138,6 +152,10 @@ class ProtocolTests(unittest.TestCase):
                 now,
             ),
             0x505: CANFrame(0x505, b"\x00", now),
+            0x506: CANFrame(0x506, b"\x00", now),
+            0x507: CANFrame(0x507, b"\x00", now),
+            0x508: CANFrame(0x508, b"\x00", now),
+            0x509: CANFrame(0x509, b"\x00", now),
         }
         rows = fault_status_rows(latest)
         self.assertTrue(all(row["Status"] == "OK" for row in rows))

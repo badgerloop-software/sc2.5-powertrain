@@ -4,10 +4,15 @@
 namespace {
 constexpr int FAULT_EEPROM_MAGIC_ADDRESS = 0;
 constexpr int FAULT_EEPROM_STATE_ADDRESS = 1;
+constexpr int FAULT_EEPROM_CAUSES_ADDRESS = 2;
 constexpr uint8_t FAULT_EEPROM_MAGIC = 0xB5;
 constexpr uint8_t FAULT_STATE_CLEAR = 0x00;
 constexpr uint8_t FAULT_STATE_LATCHED = 0xA5;
 constexpr uint8_t FAULT_STATE_CLEAR_ON_RESTART = 0x5A;
+constexpr uint8_t FAULT_CAUSE_UNDERVOLTAGE = 0x01;
+constexpr uint8_t FAULT_CAUSE_OVERVOLTAGE = 0x02;
+constexpr uint8_t FAULT_CAUSE_OVERCURRENT = 0x04;
+constexpr uint8_t FAULT_CAUSE_OVERTEMPERATURE = 0x08;
 
 constexpr uint8_t FAULT_CLEAR_PAYLOAD[FAULT_CLEAR_CAN_DLC] = {
     0x03, 0x7F, 0x20, 0x22, 0x00, 0x00, 0x00, 0x00
@@ -18,7 +23,9 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
     : CANManager(canPort, pins, frequency),
       bps_telemetry{},
       bps_fault(false),
+    bps_fault_causes(0),
       bps_fault_latched(false),
+    latched_fault_causes(0),
       received_bps_temperature(false),
       received_bps_electrical(false),
       bps_startup_grace_started(false),
@@ -32,23 +39,31 @@ void CANPowertrain::initializePersistentFault() {
 
     if (!storage_initialized) {
         EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_CLEAR);
+        EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
         EEPROM.update(FAULT_EEPROM_MAGIC_ADDRESS, FAULT_EEPROM_MAGIC);
         bps_fault_latched = false;
+        latched_fault_causes = 0;
     } else {
         const uint8_t stored_state =
             EEPROM.read(FAULT_EEPROM_STATE_ADDRESS);
         if (stored_state == FAULT_STATE_CLEAR_ON_RESTART) {
             EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_CLEAR);
+            EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
             bps_fault_latched = false;
+            latched_fault_causes = 0;
         } else {
             bps_fault_latched =
                 stored_state == FAULT_STATE_LATCHED;
+            latched_fault_causes = bps_fault_latched
+                ? EEPROM.read(FAULT_EEPROM_CAUSES_ADDRESS)
+                : 0;
             if (!bps_fault_latched &&
                 stored_state != FAULT_STATE_CLEAR) {
                 EEPROM.update(
                     FAULT_EEPROM_STATE_ADDRESS,
                     FAULT_STATE_CLEAR
                 );
+                EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
             }
         }
     }
@@ -130,10 +145,16 @@ void CANPowertrain::handleFaultClearCommand() {
     clear_on_restart_armed = true;
 }
 
-void CANPowertrain::latchBpsFault() {
+void CANPowertrain::latchBpsFault(uint8_t causes) {
+    if (causes == 0) {
+        return;
+    }
+
     bps_fault_latched = true;
+    latched_fault_causes |= causes;
     if (persistent_fault_initialized) {
         EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_LATCHED);
+        EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, latched_fault_causes);
     }
     clear_on_restart_armed = false;
 }
@@ -151,43 +172,63 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
 }
 
 void CANPowertrain::updateBpsFault() {
-    bps_fault = isBpsTelemetryOutOfRange();
+    bps_fault_causes = getBpsFaultCauses();
+    bps_fault = bps_fault_causes != 0;
 }
 
-bool CANPowertrain::isBpsTelemetryOutOfRange() const {
-    bool voltage_fault = false;
-    bool current_fault = false;
+uint8_t CANPowertrain::getBpsFaultCauses() const {
+    uint8_t causes = 0;
     if (received_bps_electrical) {
-        voltage_fault =
-            bps_telemetry.highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
-            bps_telemetry.highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
-            bps_telemetry.lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
-            bps_telemetry.lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V;
-        current_fault =
-            bps_telemetry.pack_current > BPS_PACK_CURRENT_MAX_A;
+        if (bps_telemetry.highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
+            bps_telemetry.lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
+            causes |= FAULT_CAUSE_UNDERVOLTAGE;
+        }
+        if (bps_telemetry.highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
+            bps_telemetry.lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
+            causes |= FAULT_CAUSE_OVERVOLTAGE;
+        }
+        if (bps_telemetry.pack_current > BPS_PACK_CURRENT_MAX_A) {
+            causes |= FAULT_CAUSE_OVERCURRENT;
+        }
     }
 
     // Current and temperature arrive as unsigned values, so their lower bound
     // is inherently zero.
-    bool temperature_fault = false;
     if (received_bps_temperature) {
-        temperature_fault =
-            bps_telemetry.lowest_temperature > BPS_TEMPERATURE_MAX_C ||
-            bps_telemetry.highest_temperature > BPS_TEMPERATURE_MAX_C;
+        if (bps_telemetry.lowest_temperature > BPS_TEMPERATURE_MAX_C ||
+            bps_telemetry.highest_temperature > BPS_TEMPERATURE_MAX_C) {
+            causes |= FAULT_CAUSE_OVERTEMPERATURE;
+        }
     }
 
-    return voltage_fault || current_fault || temperature_fault;
+    return causes;
 }
 
 void CANPowertrain::sendPowertrainData() {
     const bool estop_pressed = !digital_data.estop_mcu;
     if (bps_fault && (!bps_fault_latched || clear_on_restart_armed)) {
-        latchBpsFault();
+        latchBpsFault(bps_fault_causes);
     }
     const bool active_fault = estop_pressed || bps_fault_latched;
     set_mcu_batt_en(!active_fault);
-    uint8_t status =
-        active_fault ? POWERTRAIN_FAULT_MASK : 0x00;
+    uint8_t estop_status =
+        estop_pressed ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
+    uint8_t undervoltage_status =
+        (bps_fault_causes & FAULT_CAUSE_UNDERVOLTAGE) ||
+        (latched_fault_causes & FAULT_CAUSE_UNDERVOLTAGE)
+            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
+    uint8_t overvoltage_status =
+        (bps_fault_causes & FAULT_CAUSE_OVERVOLTAGE) ||
+        (latched_fault_causes & FAULT_CAUSE_OVERVOLTAGE)
+            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
+    uint8_t overcurrent_status =
+        (bps_fault_causes & FAULT_CAUSE_OVERCURRENT) ||
+        (latched_fault_causes & FAULT_CAUSE_OVERCURRENT)
+            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
+    uint8_t overtemperature_status =
+        (bps_fault_causes & FAULT_CAUSE_OVERTEMPERATURE) ||
+        (latched_fault_causes & FAULT_CAUSE_OVERTEMPERATURE)
+            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
 
     // TODO: send messages with their respective CAN IDs
     this->sendMessage(0x500, (void*)&i_12v, sizeof(float));
@@ -195,7 +236,31 @@ void CANPowertrain::sendPowertrainData() {
     this->sendMessage(0x502, (void*)&supp_i, sizeof(float));
     this->sendMessage(0x503, (void*)&batt_i, sizeof(float));
     this->sendMessage(0x504, (void*)&supp_v, sizeof(float));
-    this->sendMessage(0x505, (void*)&status, sizeof(uint8_t));
+    this->sendMessage(
+        POWERTRAIN_ESTOP_FAULT_CAN_ID,
+        (void*)&estop_status,
+        POWERTRAIN_FAULT_STATUS_DLC
+    );
+    this->sendMessage(
+        BPS_UNDERVOLTAGE_FAULT_CAN_ID,
+        (void*)&undervoltage_status,
+        POWERTRAIN_FAULT_STATUS_DLC
+    );
+    this->sendMessage(
+        BPS_OVERVOLTAGE_FAULT_CAN_ID,
+        (void*)&overvoltage_status,
+        POWERTRAIN_FAULT_STATUS_DLC
+    );
+    this->sendMessage(
+        BPS_OVERCURRENT_FAULT_CAN_ID,
+        (void*)&overcurrent_status,
+        POWERTRAIN_FAULT_STATUS_DLC
+    );
+    this->sendMessage(
+        BPS_OVERTEMPERATURE_FAULT_CAN_ID,
+        (void*)&overtemperature_status,
+        POWERTRAIN_FAULT_STATUS_DLC
+    );
 }
 
 const BpsTelemetry& CANPowertrain::getBpsTelemetry() const {

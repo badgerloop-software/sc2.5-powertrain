@@ -18,7 +18,7 @@ from protocol import (
     CANFrame,
     FAULT_CLEAR_CAN_ID,
     FAULT_CLEAR_PAYLOAD,
-    POWERTRAIN_FAULT_CAN_ID,
+    POWERTRAIN_ESTOP_FAULT_CAN_ID,
     TIME_SERIES_SIGNALS,
     decode_frame,
     decoded_time_series,
@@ -271,9 +271,9 @@ with status_tab:
         if BPS_ELECTRICAL_CAN_ID in latest
         else None
     )
-    powertrain = (
-        decode_frame(latest[POWERTRAIN_FAULT_CAN_ID])
-        if POWERTRAIN_FAULT_CAN_ID in latest
+    estop = (
+        decode_frame(latest[POWERTRAIN_ESTOP_FAULT_CAN_ID])
+        if POWERTRAIN_ESTOP_FAULT_CAN_ID in latest
         else None
     )
 
@@ -362,19 +362,17 @@ with status_tab:
 
     with powertrain_col:
         with st.container(border=True):
-            st.markdown("#### Powertrain · `0x505`")
-            if powertrain and not powertrain["error"]:
-                is_fault = powertrain["fields"]["Fault active"]
+            st.markdown("#### E-stop · `0x505`")
+            if estop and not estop["error"]:
+                is_fault = estop["fields"]["Fault active"]
                 if is_fault:
                     st.error("FAULT ACTIVE")
                 else:
                     st.success("HEALTHY")
                 st.metric("Fault bit", "1" if is_fault else "0")
-                st.caption(
-                    "Combined BPS latch or active estop status"
-                )
+                st.caption("Active-low external or driver E-stop input")
             else:
-                st.info("Waiting for powertrain status")
+                st.info("Waiting for E-stop status")
 
     st.divider()
     details_col, reset_col = st.columns([2, 1], gap="large")
