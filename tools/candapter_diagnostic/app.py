@@ -18,7 +18,8 @@ from protocol import (
     CANFrame,
     FAULT_CLEAR_CAN_ID,
     FAULT_CLEAR_PAYLOAD,
-    POWERTRAIN_ESTOP_FAULT_CAN_ID,
+    FAULT_CODE_NAMES,
+    POWERTRAIN_FAULT_CAN_ID,
     TIME_SERIES_SIGNALS,
     decode_frame,
     decoded_time_series,
@@ -221,7 +222,24 @@ if BPS_STATUS_CAN_ID in latest:
         soc = soc_message["fields"].get("State of charge")
 soc_trend = pack_soc_trend(frames)
 
-fault_rows = fault_status_rows(latest)
+fault_codes: set[int] = set()
+fault_code_clear_seen = False
+for frame in frames:
+    if frame.arbitration_id != POWERTRAIN_FAULT_CAN_ID or frame.dlc != 1:
+        continue
+    fault_code = frame.data[0]
+    if fault_code == 0:
+        fault_codes.clear()
+        fault_code_clear_seen = True
+    elif fault_code in FAULT_CODE_NAMES:
+        fault_codes.add(fault_code)
+        fault_code_clear_seen = False
+
+fault_rows = fault_status_rows(
+    latest,
+    fault_codes,
+    fault_code_clear_seen,
+)
 fault_count = sum(row["Status"] == "FAULT" for row in fault_rows)
 unknown_count = sum(row["Status"] == "UNKNOWN" for row in fault_rows)
 fault_active = fault_count > 0
@@ -271,9 +289,9 @@ with status_tab:
         if BPS_ELECTRICAL_CAN_ID in latest
         else None
     )
-    estop = (
-        decode_frame(latest[POWERTRAIN_ESTOP_FAULT_CAN_ID])
-        if POWERTRAIN_ESTOP_FAULT_CAN_ID in latest
+    powertrain = (
+        decode_frame(latest[POWERTRAIN_FAULT_CAN_ID])
+        if POWERTRAIN_FAULT_CAN_ID in latest
         else None
     )
 
@@ -362,17 +380,18 @@ with status_tab:
 
     with powertrain_col:
         with st.container(border=True):
-            st.markdown("#### E-stop · `0x505`")
-            if estop and not estop["error"]:
-                is_fault = estop["fields"]["Fault active"]
+            st.markdown("#### Fault code · `0x505`")
+            if powertrain and not powertrain["error"]:
+                fields = powertrain["fields"]
+                is_fault = fields["Fault code"] != 0
                 if is_fault:
                     st.error("FAULT ACTIVE")
                 else:
                     st.success("HEALTHY")
-                st.metric("Fault bit", "1" if is_fault else "0")
-                st.caption("Active-low external or driver E-stop input")
+                st.metric("Fault code", f"0x{fields['Fault code']:02X}")
+                st.caption(fields["Fault"])
             else:
-                st.info("Waiting for E-stop status")
+                st.info("Waiting for fault code")
 
     st.divider()
     details_col, reset_col = st.columns([2, 1], gap="large")

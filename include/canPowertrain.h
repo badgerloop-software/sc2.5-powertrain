@@ -26,6 +26,10 @@ class CANPowertrain : public CANManager {
         bool persistent_fault_initialized;
         bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
+        uint8_t fault_queue[5];
+        uint8_t fault_queue_head;
+        uint8_t fault_queue_tail;
+        uint8_t fault_queue_count;
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
@@ -34,6 +38,8 @@ class CANPowertrain : public CANManager {
         bool shouldMonitorBpsFaults();
         void handleFaultClearCommand();
         void latchBpsFault(uint8_t causes);
+        void enqueueCurrentFaults();
+        uint8_t dequeueFaultCode();
         void updateBpsFault();
 
     public:

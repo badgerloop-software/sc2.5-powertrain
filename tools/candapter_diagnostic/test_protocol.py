@@ -36,22 +36,25 @@ class ProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(decoded["fields"]["Pack current"], 0.1)
 
     def test_fault_status_decode(self) -> None:
-        frame = CANFrame(0x505, b"\x01", time.time())
+        frame = CANFrame(0x505, b"\x04", time.time())
         decoded = decode_frame(frame)
-        self.assertTrue(decoded["fields"]["Fault active"])
+        self.assertEqual(decoded["fields"]["Fault code"], 4)
+        self.assertEqual(decoded["fields"]["Fault"], "Pack overcurrent")
 
     def test_specific_fault_status_decode(self) -> None:
         cases = {
-            0x505: "E-stop",
-            0x506: "Cell undervoltage",
-            0x507: "Cell overvoltage",
-            0x508: "Pack overcurrent",
-            0x509: "Overtemperature",
+            0x01: "E-stop",
+            0x02: "Cell undervoltage",
+            0x03: "Cell overvoltage",
+            0x04: "Pack overcurrent",
+            0x05: "Overtemperature",
         }
-        for can_id, name in cases.items():
-            with self.subTest(can_id=hex(can_id)):
-                decoded = decode_frame(CANFrame(can_id, b"\x01", time.time()))
-                self.assertEqual(decoded["name"], name)
+        for fault_code, name in cases.items():
+            with self.subTest(fault_code=hex(fault_code)):
+                decoded = decode_frame(
+                    CANFrame(0x505, bytes([fault_code]), time.time())
+                )
+                self.assertEqual(decoded["fields"]["Fault"], name)
                 self.assertEqual(decoded["fields"]["Status"], "FAULT")
 
     def test_candapter_standard_frame_parse(self) -> None:
@@ -152,12 +155,8 @@ class ProtocolTests(unittest.TestCase):
                 now,
             ),
             0x505: CANFrame(0x505, b"\x00", now),
-            0x506: CANFrame(0x506, b"\x00", now),
-            0x507: CANFrame(0x507, b"\x00", now),
-            0x508: CANFrame(0x508, b"\x00", now),
-            0x509: CANFrame(0x509, b"\x00", now),
         }
-        rows = fault_status_rows(latest)
+        rows = fault_status_rows(latest, set(), True)
         self.assertTrue(all(row["Status"] == "OK" for row in rows))
 
 

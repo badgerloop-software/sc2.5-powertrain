@@ -31,7 +31,11 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
       bps_startup_grace_started(false),
       persistent_fault_initialized(false),
       clear_on_restart_armed(false),
-      first_bps_message_time(0) {};
+    first_bps_message_time(0),
+    fault_queue{},
+    fault_queue_head(0),
+    fault_queue_tail(0),
+    fault_queue_count(0) {};
 
 void CANPowertrain::initializePersistentFault() {
     const bool storage_initialized =
@@ -159,6 +163,53 @@ void CANPowertrain::latchBpsFault(uint8_t causes) {
     clear_on_restart_armed = false;
 }
 
+void CANPowertrain::enqueueCurrentFaults() {
+    fault_queue_head = 0;
+    fault_queue_tail = 0;
+    fault_queue_count = 0;
+
+    const uint8_t causes = bps_fault_causes | latched_fault_causes;
+    const bool estop_pressed = !digital_data.estop_mcu;
+    if (estop_pressed) {
+        fault_queue[fault_queue_head++] = POWERTRAIN_FAULT_ESTOP;
+        ++fault_queue_count;
+    }
+    if (causes & FAULT_CAUSE_UNDERVOLTAGE) {
+        fault_queue[fault_queue_head++] =
+            POWERTRAIN_FAULT_CELL_UNDERVOLTAGE;
+        ++fault_queue_count;
+    }
+    if (causes & FAULT_CAUSE_OVERVOLTAGE) {
+        fault_queue[fault_queue_head++] =
+            POWERTRAIN_FAULT_CELL_OVERVOLTAGE;
+        ++fault_queue_count;
+    }
+    if (causes & FAULT_CAUSE_OVERCURRENT) {
+        fault_queue[fault_queue_head++] =
+            POWERTRAIN_FAULT_PACK_OVERCURRENT;
+        ++fault_queue_count;
+    }
+    if (causes & FAULT_CAUSE_OVERTEMPERATURE) {
+        fault_queue[fault_queue_head++] =
+            POWERTRAIN_FAULT_OVERTEMPERATURE;
+        ++fault_queue_count;
+    }
+}
+
+uint8_t CANPowertrain::dequeueFaultCode() {
+    if (fault_queue_count == 0) {
+        enqueueCurrentFaults();
+    }
+    if (fault_queue_count == 0) {
+        return POWERTRAIN_FAULT_NONE;
+    }
+
+    const uint8_t fault_code = fault_queue[fault_queue_tail];
+    fault_queue_tail = (fault_queue_tail + 1) % sizeof(fault_queue);
+    --fault_queue_count;
+    return fault_code;
+}
+
 bool CANPowertrain::shouldMonitorBpsFaults() {
     const unsigned long current_time = millis();
     if (!bps_startup_grace_started) {
@@ -211,24 +262,7 @@ void CANPowertrain::sendPowertrainData() {
     }
     const bool active_fault = estop_pressed || bps_fault_latched;
     set_mcu_batt_en(!active_fault);
-    uint8_t estop_status =
-        estop_pressed ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
-    uint8_t undervoltage_status =
-        (bps_fault_causes & FAULT_CAUSE_UNDERVOLTAGE) ||
-        (latched_fault_causes & FAULT_CAUSE_UNDERVOLTAGE)
-            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
-    uint8_t overvoltage_status =
-        (bps_fault_causes & FAULT_CAUSE_OVERVOLTAGE) ||
-        (latched_fault_causes & FAULT_CAUSE_OVERVOLTAGE)
-            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
-    uint8_t overcurrent_status =
-        (bps_fault_causes & FAULT_CAUSE_OVERCURRENT) ||
-        (latched_fault_causes & FAULT_CAUSE_OVERCURRENT)
-            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
-    uint8_t overtemperature_status =
-        (bps_fault_causes & FAULT_CAUSE_OVERTEMPERATURE) ||
-        (latched_fault_causes & FAULT_CAUSE_OVERTEMPERATURE)
-            ? POWERTRAIN_FAULT_STATUS_MASK : 0x00;
+    uint8_t fault_code = dequeueFaultCode();
 
     // TODO: send messages with their respective CAN IDs
     this->sendMessage(0x500, (void*)&i_12v, sizeof(float));
@@ -237,29 +271,9 @@ void CANPowertrain::sendPowertrainData() {
     this->sendMessage(0x503, (void*)&batt_i, sizeof(float));
     this->sendMessage(0x504, (void*)&supp_v, sizeof(float));
     this->sendMessage(
-        POWERTRAIN_ESTOP_FAULT_CAN_ID,
-        (void*)&estop_status,
-        POWERTRAIN_FAULT_STATUS_DLC
-    );
-    this->sendMessage(
-        BPS_UNDERVOLTAGE_FAULT_CAN_ID,
-        (void*)&undervoltage_status,
-        POWERTRAIN_FAULT_STATUS_DLC
-    );
-    this->sendMessage(
-        BPS_OVERVOLTAGE_FAULT_CAN_ID,
-        (void*)&overvoltage_status,
-        POWERTRAIN_FAULT_STATUS_DLC
-    );
-    this->sendMessage(
-        BPS_OVERCURRENT_FAULT_CAN_ID,
-        (void*)&overcurrent_status,
-        POWERTRAIN_FAULT_STATUS_DLC
-    );
-    this->sendMessage(
-        BPS_OVERTEMPERATURE_FAULT_CAN_ID,
-        (void*)&overtemperature_status,
-        POWERTRAIN_FAULT_STATUS_DLC
+        POWERTRAIN_FAULT_CAN_ID,
+        (void*)&fault_code,
+        POWERTRAIN_FAULT_CAN_DLC
     );
 }
 
