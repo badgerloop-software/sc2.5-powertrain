@@ -1,4 +1,5 @@
 #include "canPowertrain.h"
+#include "PowertrainGpio.h"
 #include <EEPROM.h>
 
 namespace {
@@ -275,7 +276,7 @@ void CANPowertrain::enqueueCurrentFaults() {
     fault_queue_count = 0;
 
     const uint8_t causes = bps_fault_causes | latched_fault_causes;
-    const bool estop_pressed = !digital_data.estop_mcu;
+    const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
     if (estop_pressed) {
         fault_queue[fault_queue_head++] = {POWERTRAIN_FAULT_ESTOP, 0};
         ++fault_queue_count;
@@ -372,7 +373,7 @@ uint8_t CANPowertrain::getBpsFaultCauses() const {
 }
 
 void CANPowertrain::sendPowertrainData() {
-    const bool estop_pressed = !digital_data.estop_mcu;
+    const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
     if (bps_fault && (!bps_fault_latched || clear_on_restart_armed)) {
         latchBpsFault(bps_fault_causes);
     }
@@ -386,6 +387,11 @@ void CANPowertrain::sendPowertrainData() {
     };
 
     // TODO: send messages with their respective CAN IDs
+    const float i_12v = PowertrainGPIO::get_i_12v();
+    const float v_12v = PowertrainGPIO::get_v_12v();
+    const float supp_i = PowertrainGPIO::get_supp_i();
+    const float batt_i = PowertrainGPIO::get_batt_i();
+    const float supp_v = PowertrainGPIO::get_supp_v();
     this->sendMessage(0x500, (void*)&i_12v, sizeof(float));
     this->sendMessage(0x501, (void*)&v_12v, sizeof(float));
     this->sendMessage(0x502, (void*)&supp_i, sizeof(float));
