@@ -51,8 +51,6 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
     bps_fault_causes(0),
       bps_fault_latched(false),
     latched_fault_causes(0),
-      received_bps_temperature(false),
-      received_bps_electrical(false),
       bps_startup_grace_started(false),
       persistent_fault_initialized(false),
       clear_on_restart_armed(false),
@@ -133,6 +131,57 @@ void CANPowertrain::initializePersistentFault() {
     persistent_fault_initialized = true;
 }
 
+uint8_t CANPowertrain::handleTempMsg(const CAN_message_t& msg) {
+    bps_telemetry.lowest_temperature =
+        decodeUint16(msg.buf[0], msg.buf[1]);
+    bps_telemetry.highest_temperature =
+        decodeUint16(msg.buf[2], msg.buf[3]);
+
+    // Current and temperature arrive as unsigned values, so their lower bound
+    // is inherently zero.
+    uint8_t causes = 0;
+
+    if (shouldMonitorBpsFaults()) {
+        if (bps_telemetry.lowest_temperature > BPS_TEMPERATURE_MAX_C ||
+            bps_telemetry.highest_temperature > BPS_TEMPERATURE_MAX_C) {
+            causes |= FAULT_CAUSE_OVERTEMPERATURE;
+        }
+    }
+    return causes;
+}
+
+uint8_t CANPowertrain::handleElectricalMsg(const CAN_message_t& msg) {
+    bps_telemetry.highest_cell_voltage =
+        decodeCellVoltage(msg.buf[0], msg.buf[1]);
+    bps_telemetry.lowest_cell_voltage =
+        decodeCellVoltage(msg.buf[2], msg.buf[3]);
+    const uint16_t raw_current = decodeUint16(msg.buf[4], msg.buf[5]);
+    const uint16_t current_magnitude =
+        raw_current >= BPS_PACK_CURRENT_ZERO_RAW
+            ? raw_current - BPS_PACK_CURRENT_ZERO_RAW
+            : BPS_PACK_CURRENT_ZERO_RAW - raw_current;
+    bps_telemetry.pack_current =
+        static_cast<float>(current_magnitude) *
+        BPS_PACK_CURRENT_SCALE_A;
+
+    uint8_t causes = 0;
+    if (shouldMonitorBpsFaults()) {
+        if (bps_telemetry.highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
+            bps_telemetry.lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
+            causes |= FAULT_CAUSE_UNDERVOLTAGE;
+        }
+        if (bps_telemetry.highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
+            bps_telemetry.lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
+            causes |= FAULT_CAUSE_OVERVOLTAGE;
+        }
+        if (bps_telemetry.pack_current > BPS_PACK_CURRENT_MAX_A) {
+            causes |= FAULT_CAUSE_OVERCURRENT;
+        }   
+    }
+    
+    return causes;
+}
+
 void CANPowertrain::readHandler(CAN_message_t msg) {
     if (isFaultClearCommand(msg)) {
         handleFaultClearCommand();
@@ -141,33 +190,12 @@ void CANPowertrain::readHandler(CAN_message_t msg) {
 
     if (msg.id == BPS_TEMPERATURE_CAN_ID &&
         msg.len == BPS_TEMPERATURE_CAN_DLC) {
-        bps_telemetry.lowest_temperature =
-            decodeUint16(msg.buf[0], msg.buf[1]);
-        bps_telemetry.highest_temperature =
-            decodeUint16(msg.buf[2], msg.buf[3]);
-        if (shouldMonitorBpsFaults()) {
-            received_bps_temperature = true;
-            updateBpsFault();
-        }
+        bps_fault_causes = handleTempMsg(msg);
     } else if (msg.id == BPS_ELECTRICAL_CAN_ID &&
                msg.len == BPS_ELECTRICAL_CAN_DLC) {
-        bps_telemetry.highest_cell_voltage =
-            decodeCellVoltage(msg.buf[0], msg.buf[1]);
-        bps_telemetry.lowest_cell_voltage =
-            decodeCellVoltage(msg.buf[2], msg.buf[3]);
-        const uint16_t raw_current = decodeUint16(msg.buf[4], msg.buf[5]);
-        const uint16_t current_magnitude =
-            raw_current >= BPS_PACK_CURRENT_ZERO_RAW
-                ? raw_current - BPS_PACK_CURRENT_ZERO_RAW
-                : BPS_PACK_CURRENT_ZERO_RAW - raw_current;
-        bps_telemetry.pack_current =
-            static_cast<float>(current_magnitude) *
-            BPS_PACK_CURRENT_SCALE_A;
-        if (shouldMonitorBpsFaults()) {
-            received_bps_electrical = true;
-            updateBpsFault();
-        }
+        bps_fault_causes = handleElectricalMsg(msg);
     }
+    bps_fault = bps_fault_causes != 0;
 }
 
 uint16_t CANPowertrain::decodeUint16(uint8_t byte_1, uint8_t byte_2) const {
@@ -339,39 +367,6 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
            BPS_FAULT_STARTUP_GRACE_MS;
 }
 
-void CANPowertrain::updateBpsFault() {
-    bps_fault_causes = getBpsFaultCauses();
-    bps_fault = bps_fault_causes != 0;
-}
-
-uint8_t CANPowertrain::getBpsFaultCauses() const {
-    uint8_t causes = 0;
-    if (received_bps_electrical) {
-        if (bps_telemetry.highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
-            bps_telemetry.lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
-            causes |= FAULT_CAUSE_UNDERVOLTAGE;
-        }
-        if (bps_telemetry.highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
-            bps_telemetry.lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
-            causes |= FAULT_CAUSE_OVERVOLTAGE;
-        }
-        if (bps_telemetry.pack_current > BPS_PACK_CURRENT_MAX_A) {
-            causes |= FAULT_CAUSE_OVERCURRENT;
-        }
-    }
-
-    // Current and temperature arrive as unsigned values, so their lower bound
-    // is inherently zero.
-    if (received_bps_temperature) {
-        if (bps_telemetry.lowest_temperature > BPS_TEMPERATURE_MAX_C ||
-            bps_telemetry.highest_temperature > BPS_TEMPERATURE_MAX_C) {
-            causes |= FAULT_CAUSE_OVERTEMPERATURE;
-        }
-    }
-
-    return causes;
-}
-
 void CANPowertrain::sendPowertrainData() {
     const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
     if (bps_fault && (!bps_fault_latched || clear_on_restart_armed)) {
@@ -404,10 +399,10 @@ void CANPowertrain::sendPowertrainData() {
     );
 }
 
-const BpsTelemetry& CANPowertrain::getBpsTelemetry() const {
-    return bps_telemetry;
-}
+// const BpsTelemetry& CANPowertrain::getBpsTelemetry() const {
+//     return bps_telemetry;
+// }
 
-bool CANPowertrain::hasBpsFault() const {
-    return bps_fault;
-}
+// bool CANPowertrain::hasBpsFault() const {
+//     return bps_fault;
+// }

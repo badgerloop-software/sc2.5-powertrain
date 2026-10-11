@@ -1,8 +1,6 @@
-#ifndef __CAN_POWERTRAIN_H__
-#define __CAN_POWERTRAIN_H__
+#pragma once
 
 #include "canmanager.h"
-#include "IOManagement.h"
 #include "powertrainConfig.h"
 
 struct BpsTelemetry {
@@ -25,8 +23,6 @@ class CANPowertrain : public CANManager {
         uint8_t bps_fault_causes;
         bool bps_fault_latched;
         uint8_t latched_fault_causes;
-        bool received_bps_temperature;
-        bool received_bps_electrical;
         bool bps_startup_grace_started;
         bool persistent_fault_initialized;
         bool clear_on_restart_armed;
@@ -42,7 +38,6 @@ class CANPowertrain : public CANManager {
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
-        uint8_t getBpsFaultCauses() const;
         bool isFaultClearCommand(const CAN_message_t& msg) const;
         bool shouldMonitorBpsFaults();
         void handleFaultClearCommand();
@@ -51,13 +46,14 @@ class CANPowertrain : public CANManager {
         FaultEvent dequeueFaultEvent();
         void updateBpsFault();
 
+        uint8_t handleTempMsg(const CAN_message_t& msg);
+        uint8_t handleElectricalMsg(const CAN_message_t& msg);
+
     public:
         CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency = DEFAULT_CAN_FREQ);
         void initializePersistentFault();
         void readHandler(CAN_message_t msg);
         void sendPowertrainData();
-        const BpsTelemetry& getBpsTelemetry() const;
-        bool hasBpsFault() const;
+        // const BpsTelemetry& getBpsTelemetry() const;
+        // bool hasBpsFault() const;
 };
-
-#endif
