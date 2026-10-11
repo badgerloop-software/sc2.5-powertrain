@@ -12,6 +12,7 @@ BPS_STATUS_CAN_ID = 0x101
 BPS_TEMPERATURE_CAN_ID = 0x108
 BPS_ELECTRICAL_CAN_ID = 0x109
 POWERTRAIN_FAULT_CAN_ID = 0x505
+POWERTRAIN_FAULT_CAN_DLC = 3
 FAULT_CLEAR_CAN_ID = 0x7EB
 
 FAULT_CLEAR_PAYLOAD = bytes.fromhex("03 7F 20 22 00 00 00 00")
@@ -34,6 +35,8 @@ TEMPERATURE_MAX_C = 56.0
 CELL_VOLTAGE_SCALE_V = 0.0001
 PACK_CURRENT_ZERO_RAW = 0x8000
 PACK_CURRENT_SCALE_A = 0.1
+FAULT_CURRENT_SCALE_A = PACK_CURRENT_SCALE_A
+FAULT_TEMPERATURE_SCALE_C = 1.0
 STATE_OF_CHARGE_SCALE_PERCENT = 0.5
 SOC_TREND_WINDOW_SECONDS = 60.0
 
@@ -182,16 +185,33 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
                 ),
             }
         elif frame.arbitration_id == POWERTRAIN_FAULT_CAN_ID:
-            if frame.dlc != 1:
-                raise ValueError("expected DLC 1")
+            if frame.dlc != POWERTRAIN_FAULT_CAN_DLC:
+                raise ValueError(
+                    f"expected DLC {POWERTRAIN_FAULT_CAN_DLC}"
+                )
             fault_code = frame.data[0]
+            raw_value = _u16_be(frame.data, 1)
             result["name"] = "Powertrain fault code"
+            if fault_code in {0x02, 0x03}:
+                value = raw_value * CELL_VOLTAGE_SCALE_V
+                value_text = f"{value:.4f} V"
+            elif fault_code == 0x04:
+                value = raw_value * FAULT_CURRENT_SCALE_A
+                value_text = f"{value:.1f} A"
+            elif fault_code == 0x05:
+                value = raw_value * FAULT_TEMPERATURE_SCALE_C
+                value_text = f"{value:.0f} C"
+            else:
+                value = raw_value
+                value_text = str(value)
             result["fields"] = {
                 "Fault code": fault_code,
                 "Fault": FAULT_CODE_NAMES.get(
                     fault_code,
                     f"Unknown fault (0x{fault_code:02X})",
                 ),
+                "Violation value": value_text,
+                "Raw violation value": raw_value,
                 "Status": "CLEAR" if fault_code == 0 else "FAULT",
             }
         elif frame.arbitration_id == FAULT_CLEAR_CAN_ID:
@@ -297,7 +317,7 @@ def fault_status_rows(
     def code_status(code: int) -> str | None:
         if fault_codes is None:
             frame = latest.get(POWERTRAIN_FAULT_CAN_ID)
-            if frame is None or frame.dlc != 1:
+            if frame is None or frame.dlc != POWERTRAIN_FAULT_CAN_DLC:
                 return None
             fault_codes = {frame.data[0]}
             clear_seen = frame.data[0] == 0

@@ -13,6 +13,11 @@ struct BpsTelemetry {
     uint16_t highest_temperature;
 };
 
+struct FaultEvent {
+    uint8_t code;
+    uint16_t value;
+};
+
 class CANPowertrain : public CANManager {
     private:
         BpsTelemetry bps_telemetry;
@@ -26,7 +31,11 @@ class CANPowertrain : public CANManager {
         bool persistent_fault_initialized;
         bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
-        uint8_t fault_queue[5];
+        uint16_t latched_undervoltage_value;
+        uint16_t latched_overvoltage_value;
+        uint16_t latched_overcurrent_value;
+        uint16_t latched_overtemperature_value;
+        FaultEvent fault_queue[5];
         uint8_t fault_queue_head;
         uint8_t fault_queue_tail;
         uint8_t fault_queue_count;
@@ -39,7 +48,7 @@ class CANPowertrain : public CANManager {
         void handleFaultClearCommand();
         void latchBpsFault(uint8_t causes);
         void enqueueCurrentFaults();
-        uint8_t dequeueFaultCode();
+        FaultEvent dequeueFaultEvent();
         void updateBpsFault();
 
     public:

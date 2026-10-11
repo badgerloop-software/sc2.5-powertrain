@@ -7,7 +7,7 @@
 #define BPS_ELECTRICAL_CAN_ID          0x109
 #define BPS_ELECTRICAL_CAN_DLC         6
 #define POWERTRAIN_FAULT_CAN_ID        0x505
-#define POWERTRAIN_FAULT_CAN_DLC       1
+#define POWERTRAIN_FAULT_CAN_DLC       3
 
 enum PowertrainFaultCode : uint8_t {
 	POWERTRAIN_FAULT_NONE = 0x00,

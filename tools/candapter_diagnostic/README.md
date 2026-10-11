@@ -86,7 +86,10 @@ pending clear. Estop is transient and is not stored in EEPROM.
 - `0x108`: two big-endian unsigned temperatures in whole degrees Celsius
 - `0x109`: two big-endian cell voltages at 0.1 mV/bit, followed by pack
   current magnitude at 0.1 A/bit around a raw zero point of `0x8000`
-- `0x505`: byte 0 bit 0 is the combined fault status (`1` means fault)
+- `0x505`: DLC 3; byte 0 is the fault code and bytes 1-2 are a
+  big-endian violation value. Voltage values use the existing 0.0001 V/bit
+  scale, current values use 0.1 A/bit, and temperature values use 1 C/bit.
+  The value is captured when the persistent fault is latched.
 
 Keep `protocol.py` synchronized with `include/powertrainConfig.h` whenever
 the firmware limits or message definitions change.

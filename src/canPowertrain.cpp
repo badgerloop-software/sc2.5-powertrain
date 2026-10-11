@@ -5,7 +5,11 @@ namespace {
 constexpr int FAULT_EEPROM_MAGIC_ADDRESS = 0;
 constexpr int FAULT_EEPROM_STATE_ADDRESS = 1;
 constexpr int FAULT_EEPROM_CAUSES_ADDRESS = 2;
-constexpr uint8_t FAULT_EEPROM_MAGIC = 0xB5;
+constexpr int FAULT_EEPROM_UNDERVOLTAGE_VALUE_ADDRESS = 3;
+constexpr int FAULT_EEPROM_OVERVOLTAGE_VALUE_ADDRESS = 5;
+constexpr int FAULT_EEPROM_OVERCURRENT_VALUE_ADDRESS = 7;
+constexpr int FAULT_EEPROM_OVERTEMPERATURE_VALUE_ADDRESS = 9;
+constexpr uint8_t FAULT_EEPROM_MAGIC = 0xB6;
 constexpr uint8_t FAULT_STATE_CLEAR = 0x00;
 constexpr uint8_t FAULT_STATE_LATCHED = 0xA5;
 constexpr uint8_t FAULT_STATE_CLEAR_ON_RESTART = 0x5A;
@@ -17,6 +21,26 @@ constexpr uint8_t FAULT_CAUSE_OVERTEMPERATURE = 0x08;
 constexpr uint8_t FAULT_CLEAR_PAYLOAD[FAULT_CLEAR_CAN_DLC] = {
     0x03, 0x7F, 0x20, 0x22, 0x00, 0x00, 0x00, 0x00
 };
+
+void writeUint16(int address, uint16_t value) {
+    EEPROM.update(address, static_cast<uint8_t>(value >> 8));
+    EEPROM.update(address + 1, static_cast<uint8_t>(value & 0xFF));
+}
+
+uint16_t readUint16(int address) {
+    return (static_cast<uint16_t>(EEPROM.read(address)) << 8) |
+           static_cast<uint16_t>(EEPROM.read(address + 1));
+}
+
+uint16_t encodeFaultValue(float value, float scale) {
+    if (value <= 0.0f) {
+        return 0;
+    }
+    const float encoded = value / scale + 0.5f;
+    return encoded >= 65535.0f
+        ? 0xFFFF
+        : static_cast<uint16_t>(encoded);
+}
 }
 
 CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
@@ -32,7 +56,11 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
       persistent_fault_initialized(false),
       clear_on_restart_armed(false),
     first_bps_message_time(0),
-    fault_queue{},
+      latched_undervoltage_value(0),
+      latched_overvoltage_value(0),
+      latched_overcurrent_value(0),
+      latched_overtemperature_value(0),
+      fault_queue{},
     fault_queue_head(0),
     fault_queue_tail(0),
     fault_queue_count(0) {};
@@ -45,8 +73,16 @@ void CANPowertrain::initializePersistentFault() {
         EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_CLEAR);
         EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
         EEPROM.update(FAULT_EEPROM_MAGIC_ADDRESS, FAULT_EEPROM_MAGIC);
+        writeUint16(FAULT_EEPROM_UNDERVOLTAGE_VALUE_ADDRESS, 0);
+        writeUint16(FAULT_EEPROM_OVERVOLTAGE_VALUE_ADDRESS, 0);
+        writeUint16(FAULT_EEPROM_OVERCURRENT_VALUE_ADDRESS, 0);
+        writeUint16(FAULT_EEPROM_OVERTEMPERATURE_VALUE_ADDRESS, 0);
         bps_fault_latched = false;
         latched_fault_causes = 0;
+        latched_undervoltage_value = 0;
+        latched_overvoltage_value = 0;
+        latched_overcurrent_value = 0;
+        latched_overtemperature_value = 0;
     } else {
         const uint8_t stored_state =
             EEPROM.read(FAULT_EEPROM_STATE_ADDRESS);
@@ -55,11 +91,27 @@ void CANPowertrain::initializePersistentFault() {
             EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
             bps_fault_latched = false;
             latched_fault_causes = 0;
+            latched_undervoltage_value = 0;
+            latched_overvoltage_value = 0;
+            latched_overcurrent_value = 0;
+            latched_overtemperature_value = 0;
         } else {
             bps_fault_latched =
                 stored_state == FAULT_STATE_LATCHED;
             latched_fault_causes = bps_fault_latched
                 ? EEPROM.read(FAULT_EEPROM_CAUSES_ADDRESS)
+                : 0;
+            latched_undervoltage_value = bps_fault_latched
+                ? readUint16(FAULT_EEPROM_UNDERVOLTAGE_VALUE_ADDRESS)
+                : 0;
+            latched_overvoltage_value = bps_fault_latched
+                ? readUint16(FAULT_EEPROM_OVERVOLTAGE_VALUE_ADDRESS)
+                : 0;
+            latched_overcurrent_value = bps_fault_latched
+                ? readUint16(FAULT_EEPROM_OVERCURRENT_VALUE_ADDRESS)
+                : 0;
+            latched_overtemperature_value = bps_fault_latched
+                ? readUint16(FAULT_EEPROM_OVERTEMPERATURE_VALUE_ADDRESS)
                 : 0;
             if (!bps_fault_latched &&
                 stored_state != FAULT_STATE_CLEAR) {
@@ -68,6 +120,10 @@ void CANPowertrain::initializePersistentFault() {
                     FAULT_STATE_CLEAR
                 );
                 EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
+                latched_undervoltage_value = 0;
+                latched_overvoltage_value = 0;
+                latched_overcurrent_value = 0;
+                latched_overtemperature_value = 0;
             }
         }
     }
@@ -146,6 +202,11 @@ void CANPowertrain::handleFaultClearCommand() {
         FAULT_EEPROM_STATE_ADDRESS,
         FAULT_STATE_CLEAR_ON_RESTART
     );
+    EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, 0);
+    writeUint16(FAULT_EEPROM_UNDERVOLTAGE_VALUE_ADDRESS, 0);
+    writeUint16(FAULT_EEPROM_OVERVOLTAGE_VALUE_ADDRESS, 0);
+    writeUint16(FAULT_EEPROM_OVERCURRENT_VALUE_ADDRESS, 0);
+    writeUint16(FAULT_EEPROM_OVERTEMPERATURE_VALUE_ADDRESS, 0);
     clear_on_restart_armed = true;
 }
 
@@ -156,9 +217,54 @@ void CANPowertrain::latchBpsFault(uint8_t causes) {
 
     bps_fault_latched = true;
     latched_fault_causes |= causes;
+    if (causes & FAULT_CAUSE_UNDERVOLTAGE) {
+        const float value = min(
+            bps_telemetry.lowest_cell_voltage,
+            bps_telemetry.highest_cell_voltage
+        );
+        latched_undervoltage_value =
+            encodeFaultValue(value, BPS_CELL_VOLTAGE_SCALE_V);
+    }
+    if (causes & FAULT_CAUSE_OVERVOLTAGE) {
+        const float value = max(
+            bps_telemetry.lowest_cell_voltage,
+            bps_telemetry.highest_cell_voltage
+        );
+        latched_overvoltage_value =
+            encodeFaultValue(value, BPS_CELL_VOLTAGE_SCALE_V);
+    }
+    if (causes & FAULT_CAUSE_OVERCURRENT) {
+        latched_overcurrent_value =
+            encodeFaultValue(
+                bps_telemetry.pack_current,
+                BPS_PACK_CURRENT_SCALE_A
+            );
+    }
+    if (causes & FAULT_CAUSE_OVERTEMPERATURE) {
+        latched_overtemperature_value = max(
+            bps_telemetry.lowest_temperature,
+            bps_telemetry.highest_temperature
+        );
+    }
     if (persistent_fault_initialized) {
         EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_LATCHED);
         EEPROM.update(FAULT_EEPROM_CAUSES_ADDRESS, latched_fault_causes);
+        writeUint16(
+            FAULT_EEPROM_UNDERVOLTAGE_VALUE_ADDRESS,
+            latched_undervoltage_value
+        );
+        writeUint16(
+            FAULT_EEPROM_OVERVOLTAGE_VALUE_ADDRESS,
+            latched_overvoltage_value
+        );
+        writeUint16(
+            FAULT_EEPROM_OVERCURRENT_VALUE_ADDRESS,
+            latched_overcurrent_value
+        );
+        writeUint16(
+            FAULT_EEPROM_OVERTEMPERATURE_VALUE_ADDRESS,
+            latched_overtemperature_value
+        );
     }
     clear_on_restart_armed = false;
 }
@@ -171,43 +277,53 @@ void CANPowertrain::enqueueCurrentFaults() {
     const uint8_t causes = bps_fault_causes | latched_fault_causes;
     const bool estop_pressed = !digital_data.estop_mcu;
     if (estop_pressed) {
-        fault_queue[fault_queue_head++] = POWERTRAIN_FAULT_ESTOP;
+        fault_queue[fault_queue_head++] = {POWERTRAIN_FAULT_ESTOP, 0};
         ++fault_queue_count;
     }
     if (causes & FAULT_CAUSE_UNDERVOLTAGE) {
-        fault_queue[fault_queue_head++] =
-            POWERTRAIN_FAULT_CELL_UNDERVOLTAGE;
+        fault_queue[fault_queue_head++] = {
+            POWERTRAIN_FAULT_CELL_UNDERVOLTAGE,
+            latched_undervoltage_value
+        };
         ++fault_queue_count;
     }
     if (causes & FAULT_CAUSE_OVERVOLTAGE) {
-        fault_queue[fault_queue_head++] =
-            POWERTRAIN_FAULT_CELL_OVERVOLTAGE;
+        fault_queue[fault_queue_head++] = {
+            POWERTRAIN_FAULT_CELL_OVERVOLTAGE,
+            latched_overvoltage_value
+        };
         ++fault_queue_count;
     }
     if (causes & FAULT_CAUSE_OVERCURRENT) {
-        fault_queue[fault_queue_head++] =
-            POWERTRAIN_FAULT_PACK_OVERCURRENT;
+        fault_queue[fault_queue_head++] = {
+            POWERTRAIN_FAULT_PACK_OVERCURRENT,
+            latched_overcurrent_value
+        };
         ++fault_queue_count;
     }
     if (causes & FAULT_CAUSE_OVERTEMPERATURE) {
-        fault_queue[fault_queue_head++] =
-            POWERTRAIN_FAULT_OVERTEMPERATURE;
+        fault_queue[fault_queue_head++] = {
+            POWERTRAIN_FAULT_OVERTEMPERATURE,
+            latched_overtemperature_value
+        };
         ++fault_queue_count;
     }
 }
 
-uint8_t CANPowertrain::dequeueFaultCode() {
+FaultEvent CANPowertrain::dequeueFaultEvent() {
     if (fault_queue_count == 0) {
         enqueueCurrentFaults();
     }
     if (fault_queue_count == 0) {
-        return POWERTRAIN_FAULT_NONE;
+        return {POWERTRAIN_FAULT_NONE, 0};
     }
 
-    const uint8_t fault_code = fault_queue[fault_queue_tail];
-    fault_queue_tail = (fault_queue_tail + 1) % sizeof(fault_queue);
+    const FaultEvent fault_event = fault_queue[fault_queue_tail];
+    fault_queue_tail = (
+        fault_queue_tail + 1
+    ) % (sizeof(fault_queue) / sizeof(fault_queue[0]));
     --fault_queue_count;
-    return fault_code;
+    return fault_event;
 }
 
 bool CANPowertrain::shouldMonitorBpsFaults() {
@@ -262,7 +378,12 @@ void CANPowertrain::sendPowertrainData() {
     }
     const bool active_fault = estop_pressed || bps_fault_latched;
     set_mcu_batt_en(!active_fault);
-    uint8_t fault_code = dequeueFaultCode();
+    const FaultEvent fault_event = dequeueFaultEvent();
+    uint8_t fault_payload[POWERTRAIN_FAULT_CAN_DLC] = {
+        fault_event.code,
+        static_cast<uint8_t>(fault_event.value >> 8),
+        static_cast<uint8_t>(fault_event.value & 0xFF)
+    };
 
     // TODO: send messages with their respective CAN IDs
     this->sendMessage(0x500, (void*)&i_12v, sizeof(float));
@@ -272,7 +393,7 @@ void CANPowertrain::sendPowertrainData() {
     this->sendMessage(0x504, (void*)&supp_v, sizeof(float));
     this->sendMessage(
         POWERTRAIN_FAULT_CAN_ID,
-        (void*)&fault_code,
+        (void*)fault_payload,
         POWERTRAIN_FAULT_CAN_DLC
     );
 }

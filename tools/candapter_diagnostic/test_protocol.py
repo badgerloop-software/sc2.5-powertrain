@@ -36,10 +36,11 @@ class ProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(decoded["fields"]["Pack current"], 0.1)
 
     def test_fault_status_decode(self) -> None:
-        frame = CANFrame(0x505, b"\x04", time.time())
+        frame = CANFrame(0x505, bytes.fromhex("04 00 23"), time.time())
         decoded = decode_frame(frame)
         self.assertEqual(decoded["fields"]["Fault code"], 4)
         self.assertEqual(decoded["fields"]["Fault"], "Pack overcurrent")
+        self.assertEqual(decoded["fields"]["Violation value"], "3.5 A")
 
     def test_specific_fault_status_decode(self) -> None:
         cases = {
@@ -52,7 +53,11 @@ class ProtocolTests(unittest.TestCase):
         for fault_code, name in cases.items():
             with self.subTest(fault_code=hex(fault_code)):
                 decoded = decode_frame(
-                    CANFrame(0x505, bytes([fault_code]), time.time())
+                    CANFrame(
+                        0x505,
+                        bytes([fault_code, 0, 0]),
+                        time.time(),
+                    )
                 )
                 self.assertEqual(decoded["fields"]["Fault"], name)
                 self.assertEqual(decoded["fields"]["Status"], "FAULT")
@@ -154,7 +159,7 @@ class ProtocolTests(unittest.TestCase):
                 bytes.fromhex("85 CF 83 3F 7F FF"),
                 now,
             ),
-            0x505: CANFrame(0x505, b"\x00", now),
+            0x505: CANFrame(0x505, b"\x00\x00\x00", now),
         }
         rows = fault_status_rows(latest, set(), True)
         self.assertTrue(all(row["Status"] == "OK" for row in rows))

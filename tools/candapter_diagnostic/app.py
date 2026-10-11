@@ -20,6 +20,7 @@ from protocol import (
     FAULT_CLEAR_PAYLOAD,
     FAULT_CODE_NAMES,
     POWERTRAIN_FAULT_CAN_ID,
+    POWERTRAIN_FAULT_CAN_DLC,
     TIME_SERIES_SIGNALS,
     decode_frame,
     decoded_time_series,
@@ -225,7 +226,10 @@ soc_trend = pack_soc_trend(frames)
 fault_codes: set[int] = set()
 fault_code_clear_seen = False
 for frame in frames:
-    if frame.arbitration_id != POWERTRAIN_FAULT_CAN_ID or frame.dlc != 1:
+    if (
+        frame.arbitration_id != POWERTRAIN_FAULT_CAN_ID
+        or frame.dlc != POWERTRAIN_FAULT_CAN_DLC
+    ):
         continue
     fault_code = frame.data[0]
     if fault_code == 0:
