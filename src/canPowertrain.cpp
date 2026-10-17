@@ -24,7 +24,8 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
       bps_startup_grace_started(false),
       persistent_fault_initialized(false),
       clear_on_restart_armed(false),
-      first_bps_message_time(0) {};
+      first_bps_message_time(0),
+      bps_fault_parameter(POWERTRAIN_FAULT_PARAMETER_NONE) {};
 
 void CANPowertrain::initializePersistentFault() {
     const bool storage_initialized =
@@ -151,7 +152,37 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
 }
 
 void CANPowertrain::updateBpsFault() {
-    bps_fault = isBpsTelemetryOutOfRange();
+    const bool fault = isBpsTelemetryOutOfRange();
+    if (fault && !bps_fault) {
+        bps_fault_parameter = identifyBpsFault();
+    } else if (!fault && !bps_fault_latched) {
+        bps_fault_parameter = POWERTRAIN_FAULT_PARAMETER_NONE;
+    }
+    bps_fault = fault;
+}
+
+uint8_t CANPowertrain::identifyBpsFault() const {
+    if (received_bps_electrical) {
+        if (bps_telemetry.highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
+            bps_telemetry.lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
+            return POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT;
+        }
+        if (bps_telemetry.highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
+            bps_telemetry.lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
+            return POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT;
+        }
+        if (bps_telemetry.pack_current > BPS_PACK_CURRENT_MAX_A) {
+            return POWERTRAIN_FAULT_PARAMETER_OVERCURRENT;
+        }
+    }
+
+    if (received_bps_temperature &&
+        (bps_telemetry.lowest_temperature > BPS_TEMPERATURE_MAX_C ||
+         bps_telemetry.highest_temperature > BPS_TEMPERATURE_MAX_C)) {
+        return POWERTRAIN_FAULT_PARAMETER_OVERTEMP;
+    }
+
+    return POWERTRAIN_FAULT_PARAMETER_NONE;
 }
 
 bool CANPowertrain::isBpsTelemetryOutOfRange() const {
@@ -188,6 +219,9 @@ void CANPowertrain::sendPowertrainData() {
     set_mcu_batt_en(!active_fault);
     uint8_t status =
         active_fault ? POWERTRAIN_FAULT_MASK : 0x00;
+    uint8_t fault_payload[POWERTRAIN_FAULT_CAN_DLC] = {};
+    fault_payload[0] = status;
+    fault_payload[1] = bps_fault_parameter;
 
     // TODO: send messages with their respective CAN IDs
     this->sendMessage(0x500, (void*)&i_12v, sizeof(float));
@@ -195,7 +229,11 @@ void CANPowertrain::sendPowertrainData() {
     this->sendMessage(0x502, (void*)&supp_i, sizeof(float));
     this->sendMessage(0x503, (void*)&batt_i, sizeof(float));
     this->sendMessage(0x504, (void*)&supp_v, sizeof(float));
-    this->sendMessage(0x505, (void*)&status, sizeof(uint8_t));
+    this->sendMessage(
+        POWERTRAIN_FAULT_CAN_ID,
+        (void*)fault_payload,
+        POWERTRAIN_FAULT_CAN_DLC
+    );
 }
 
 const BpsTelemetry& CANPowertrain::getBpsTelemetry() const {

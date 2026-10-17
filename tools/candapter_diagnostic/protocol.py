@@ -13,6 +13,13 @@ BPS_TEMPERATURE_CAN_ID = 0x108
 BPS_ELECTRICAL_CAN_ID = 0x109
 POWERTRAIN_FAULT_CAN_ID = 0x505
 FAULT_CLEAR_CAN_ID = 0x7EB
+POWERTRAIN_FAULT_PARAMETER_NAMES = {
+    0x00: "None",
+    0x01: "Cell overvoltage",
+    0x02: "Cell undervoltage",
+    0x03: "Pack overcurrent",
+    0x04: "Pack overtemperature",
+}
 
 FAULT_CLEAR_PAYLOAD = bytes.fromhex("03 7F 20 22 00 00 00 00")
 
@@ -173,13 +180,21 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
                 ),
             }
         elif frame.arbitration_id == POWERTRAIN_FAULT_CAN_ID:
-            if frame.dlc != 1:
-                raise ValueError("expected DLC 1")
+            if frame.dlc not in (1, 2):
+                raise ValueError("expected DLC 1 or 2")
             active = bool(frame.data[0] & 0x01)
+            parameter = frame.data[1] if frame.dlc == 2 else None
             result["name"] = "Powertrain fault status"
             result["fields"] = {
                 "Fault active": active,
                 "Status": "FAULT" if active else "Healthy",
+                "Violated parameter": (
+                    "Not reported"
+                    if parameter is None
+                    else POWERTRAIN_FAULT_PARAMETER_NAMES.get(
+                        parameter, f"Unknown (0x{parameter:02X})"
+                    )
+                ),
             }
         elif frame.arbitration_id == FAULT_CLEAR_CAN_ID:
             result["name"] = "Powertrain fault-clear command"
@@ -380,7 +395,7 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
         )
 
     status = latest.get(POWERTRAIN_FAULT_CAN_ID)
-    if status is None or status.dlc != 1:
+    if status is None or status.dlc not in (1, 2):
         add("Powertrain combined fault", "0x505 bit 0", "—", None, "0")
     else:
         active = bool(status.data[0] & 0x01)

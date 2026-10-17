@@ -36,9 +36,50 @@ class ProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(decoded["fields"]["Pack current"], 0.1)
 
     def test_fault_status_decode(self) -> None:
-        frame = CANFrame(0x505, b"\x01", time.time())
+        frame = CANFrame(0x505, b"\x01\x00", time.time())
         decoded = decode_frame(frame)
         self.assertTrue(decoded["fields"]["Fault active"])
+
+    def test_fault_parameter_decode(self) -> None:
+        frame = CANFrame(
+            0x505,
+            b"\x01\x01",
+            time.time(),
+        )
+        decoded = decode_frame(frame)
+        self.assertEqual(
+            decoded["fields"]["Violated parameter"],
+            "Cell overvoltage",
+        )
+
+    def test_fault_status_formats_reach_overview(self) -> None:
+        for payload in (b"\x00", b"\x01", b"\x00\x00", b"\x01\x02"):
+            with self.subTest(payload=payload):
+                frame = CANFrame(0x505, payload, time.time())
+                decoded = decode_frame(frame)
+                active = bool(payload[0] & 1)
+                self.assertEqual(decoded["error"], "")
+                self.assertEqual(decoded["fields"]["Fault active"], active)
+                if len(payload) == 1:
+                    self.assertEqual(
+                        decoded["fields"]["Violated parameter"], "Not reported"
+                    )
+                row = next(
+                    row for row in fault_status_rows({0x505: frame})
+                    if row["Fault"] == "Powertrain combined fault"
+                )
+                self.assertEqual(row["Status"], "FAULT" if active else "OK")
+
+    def test_invalid_fault_status_is_unknown(self) -> None:
+        for payload in (b"", b"\x01\x02\x03"):
+            with self.subTest(payload=payload):
+                frame = CANFrame(0x505, payload, time.time())
+                self.assertTrue(decode_frame(frame)["error"])
+                row = next(
+                    row for row in fault_status_rows({0x505: frame})
+                    if row["Fault"] == "Powertrain combined fault"
+                )
+                self.assertEqual(row["Status"], "UNKNOWN")
 
     def test_candapter_standard_frame_parse(self) -> None:
         frame = parse_candapter_frame("T109685CF833F7FFF")

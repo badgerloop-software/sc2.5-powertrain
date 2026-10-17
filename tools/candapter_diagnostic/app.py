@@ -370,6 +370,11 @@ with status_tab:
                 else:
                     st.success("HEALTHY")
                 st.metric("Fault bit", "1" if is_fault else "0")
+                if is_fault:
+                    st.write(
+                        "Violated parameter: "
+                        f"{powertrain['fields']['Violated parameter']}"
+                    )
                 st.caption(
                     "Combined BPS latch or active estop status"
                 )
