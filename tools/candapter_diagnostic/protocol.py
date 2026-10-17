@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import math
 import struct
 from typing import Any
 
@@ -28,6 +29,19 @@ CELL_VOLTAGE_MAX_V = 4.18
 PACK_CURRENT_MAX_A = 35.0
 TEMPERATURE_MIN_C = 4.0
 TEMPERATURE_MAX_C = 56.0
+
+POWERTRAIN_FAULT_READING_UNITS = {
+    0x01: "V",
+    0x02: "V",
+    0x03: "A",
+    0x04: "\u00b0C",
+}
+POWERTRAIN_FAULT_LIMITS = {
+    0x01: f"Maximum {CELL_VOLTAGE_MAX_V:.2f} V",
+    0x02: f"Minimum {CELL_VOLTAGE_MIN_V:.2f} V",
+    0x03: f"Maximum {PACK_CURRENT_MAX_A:g} A (magnitude)",
+    0x04: f"Maximum {TEMPERATURE_MAX_C:g} \u00b0C",
+}
 
 CELL_VOLTAGE_SCALE_V = 0.0001
 PACK_CURRENT_ZERO_RAW = 0x8000
@@ -180,10 +194,10 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
                 ),
             }
         elif frame.arbitration_id == POWERTRAIN_FAULT_CAN_ID:
-            if frame.dlc not in (1, 2):
-                raise ValueError("expected DLC 1 or 2")
+            if frame.dlc not in (1, 2, 8):
+                raise ValueError("expected DLC 1, 2, or 8")
             active = bool(frame.data[0] & 0x01)
-            parameter = frame.data[1] if frame.dlc == 2 else None
+            parameter = frame.data[1] if frame.dlc >= 2 else None
             result["name"] = "Powertrain fault status"
             result["fields"] = {
                 "Fault active": active,
@@ -195,7 +209,31 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
                         parameter, f"Unknown (0x{parameter:02X})"
                     )
                 ),
+                "Reading at fault": "Not reported",
+                "Reading unit": "",
+                "Raw reading at fault": "Not reported",
+                "Fault limit": POWERTRAIN_FAULT_LIMITS.get(
+                    parameter, "Not reported"
+                ),
             }
+            if frame.dlc == 8 and parameter != 0:
+                reading = struct.unpack("<f", frame.data[4:8])[0]
+                result["fields"].update(
+                    {
+                        "Reading at fault": (
+                            reading
+                            if math.isfinite(reading)
+                            else "Invalid (non-finite)"
+                        ),
+                        "Reading unit": POWERTRAIN_FAULT_READING_UNITS.get(
+                            parameter, "Unknown unit"
+                        ),
+                        "Raw reading at fault": _u16_be(frame.data, 2),
+                        "Fault limit": POWERTRAIN_FAULT_LIMITS.get(
+                            parameter, "Unknown"
+                        ),
+                    }
+                )
         elif frame.arbitration_id == FAULT_CLEAR_CAN_ID:
             result["name"] = "Powertrain fault-clear command"
             result["fields"] = {
@@ -219,6 +257,22 @@ def decode_frame(frame: CANFrame) -> dict[str, Any]:
         result["error"] = str(exc)
 
     return result
+
+
+def format_fault_reading(fields: dict[str, Any]) -> str:
+    """Render a captured reading without replacing it with live telemetry."""
+    value = fields.get("Reading at fault", "Not reported")
+    if not isinstance(value, (int, float)):
+        return str(value)
+    unit = fields.get("Reading unit", "Unknown unit")
+    precision = {"V": 4, "A": 1, "\u00b0C": 0}.get(unit)
+    rendered = f"{value:.{precision}f}" if precision is not None else f"{value:g}"
+    return f"{rendered} {unit}"
+
+
+def format_fault_raw_reading(fields: dict[str, Any]) -> str:
+    value = fields.get("Raw reading at fault", "Not reported")
+    return f"{value} (0x{value:04X})" if isinstance(value, int) else str(value)
 
 
 def pack_soc_trend(
@@ -395,7 +449,7 @@ def fault_status_rows(latest: dict[int, CANFrame]) -> list[dict[str, Any]]:
         )
 
     status = latest.get(POWERTRAIN_FAULT_CAN_ID)
-    if status is None or status.dlc not in (1, 2):
+    if status is None or status.dlc not in (1, 2, 8):
         add("Powertrain combined fault", "0x505 bit 0", "—", None, "0")
     else:
         active = bool(status.data[0] & 0x01)

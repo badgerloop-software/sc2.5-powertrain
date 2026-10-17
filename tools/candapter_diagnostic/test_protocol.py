@@ -1,3 +1,4 @@
+import struct
 import time
 import unittest
 
@@ -7,6 +8,8 @@ from protocol import (
     decode_frame,
     decoded_time_series,
     fault_status_rows,
+    format_fault_raw_reading,
+    format_fault_reading,
     pack_soc_trend,
 )
 
@@ -53,7 +56,11 @@ class ProtocolTests(unittest.TestCase):
         )
 
     def test_fault_status_formats_reach_overview(self) -> None:
-        for payload in (b"\x00", b"\x01", b"\x00\x00", b"\x01\x02"):
+        for payload in (
+            b"\x00", b"\x01", b"\x00\x00", b"\x01\x02",
+            bytes.fromhex("01 01 A6 04 00 00 88 40"),
+            bytes(8),
+        ):
             with self.subTest(payload=payload):
                 frame = CANFrame(0x505, payload, time.time())
                 decoded = decode_frame(frame)
@@ -64,6 +71,13 @@ class ProtocolTests(unittest.TestCase):
                     self.assertEqual(
                         decoded["fields"]["Violated parameter"], "Not reported"
                     )
+                if len(payload) < 8:
+                    self.assertEqual(
+                        decoded["fields"]["Reading at fault"], "Not reported"
+                    )
+                    self.assertEqual(
+                        decoded["fields"]["Raw reading at fault"], "Not reported"
+                    )
                 row = next(
                     row for row in fault_status_rows({0x505: frame})
                     if row["Fault"] == "Powertrain combined fault"
@@ -71,7 +85,8 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(row["Status"], "FAULT" if active else "OK")
 
     def test_invalid_fault_status_is_unknown(self) -> None:
-        for payload in (b"", b"\x01\x02\x03"):
+        for length in (0, 3, 4, 5, 6, 7, 9):
+            payload = b"\x01" * length
             with self.subTest(payload=payload):
                 frame = CANFrame(0x505, payload, time.time())
                 self.assertTrue(decode_frame(frame)["error"])
@@ -80,6 +95,76 @@ class ProtocolTests(unittest.TestCase):
                     if row["Fault"] == "Powertrain combined fault"
                 )
                 self.assertEqual(row["Status"], "UNKNOWN")
+
+    def test_fault_snapshot_decodes_wire_layout(self) -> None:
+        # Independent literal wire bytes catch both endianness conventions.
+        frame = CANFrame(
+            0x505, bytes.fromhex("01 01 A6 04 00 00 88 40"), time.time()
+        )
+        decoded = decode_frame(frame)
+        fields = decoded["fields"]
+        self.assertEqual(decoded["error"], "")
+        self.assertEqual(fields["Violated parameter"], "Cell overvoltage")
+        self.assertEqual(fields["Reading at fault"], 4.25)
+        self.assertEqual(fields["Raw reading at fault"], 42500)
+        self.assertEqual(format_fault_reading(fields), "4.2500 V")
+        self.assertEqual(format_fault_raw_reading(fields), "42500 (0xA604)")
+        self.assertEqual(fields["Fault limit"], "Maximum 4.18 V")
+
+    def test_fault_snapshot_parameters_and_units(self) -> None:
+        cases = (
+            (2, 25000, 2.5, "2.5000 V", "Minimum 2.52 V"),
+            (3, 0x8190, 40.0, "40.0 A", "Maximum 35 A (magnitude)"),
+            (3, 0x7E70, 40.0, "40.0 A", "Maximum 35 A (magnitude)"),
+            (4, 57, 57.0, "57 \u00b0C", "Maximum 56 \u00b0C"),
+            (4, 0xFFFF, 65535.0, "65535 \u00b0C", "Maximum 56 \u00b0C"),
+        )
+        for parameter, raw, value, rendered, limit in cases:
+            with self.subTest(parameter=parameter, raw=raw):
+                payload = bytes([1, parameter]) + raw.to_bytes(2, "big")
+                payload += struct.pack("<f", value)
+                decoded = decode_frame(CANFrame(0x505, payload, time.time()))
+                self.assertEqual(decoded["error"], "")
+                self.assertEqual(decoded["fields"]["Reading at fault"], value)
+                self.assertEqual(decoded["fields"]["Raw reading at fault"], raw)
+                self.assertEqual(format_fault_reading(decoded["fields"]), rendered)
+                self.assertEqual(decoded["fields"]["Fault limit"], limit)
+
+    def test_no_parameter_means_no_snapshot(self) -> None:
+        for status in (0, 1):
+            with self.subTest(status=status):
+                # Even leftover nonzero data must not invent an estop reading.
+                payload = bytes([status, 0]) + bytes.fromhex("FF FF 00 00 88 40")
+                decoded = decode_frame(CANFrame(0x505, payload, time.time()))
+                self.assertEqual(decoded["error"], "")
+                self.assertEqual(decoded["fields"]["Reading at fault"], "Not reported")
+                self.assertEqual(
+                    decoded["fields"]["Raw reading at fault"], "Not reported"
+                )
+
+    def test_unknown_fault_parameter_keeps_raw_and_unknown_units(self) -> None:
+        payload = bytes.fromhex("01 FE 12 34 00 00 88 40")
+        decoded = decode_frame(CANFrame(0x505, payload, time.time()))
+        self.assertEqual(decoded["error"], "")
+        self.assertEqual(decoded["fields"]["Violated parameter"], "Unknown (0xFE)")
+        self.assertEqual(decoded["fields"]["Raw reading at fault"], 0x1234)
+        self.assertEqual(format_fault_reading(decoded["fields"]), "4.25 Unknown unit")
+        self.assertEqual(decoded["fields"]["Fault limit"], "Unknown")
+
+    def test_nonfinite_snapshot_retains_fault_and_raw(self) -> None:
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                payload = bytes.fromhex("01 03 FF FF") + struct.pack("<f", value)
+                frame = CANFrame(0x505, payload, time.time())
+                decoded = decode_frame(frame)
+                self.assertEqual(decoded["error"], "")
+                self.assertTrue(decoded["fields"]["Fault active"])
+                self.assertEqual(
+                    format_fault_reading(decoded["fields"]), "Invalid (non-finite)"
+                )
+                self.assertEqual(decoded["fields"]["Raw reading at fault"], 0xFFFF)
+                row = fault_status_rows({0x505: frame})[-1]
+                self.assertEqual(row["Status"], "FAULT")
 
     def test_candapter_standard_frame_parse(self) -> None:
         frame = parse_candapter_frame("T109685CF833F7FFF")

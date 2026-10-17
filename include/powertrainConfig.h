@@ -7,10 +7,13 @@
 #define BPS_ELECTRICAL_CAN_ID          0x109
 #define BPS_ELECTRICAL_CAN_DLC         6
 #define POWERTRAIN_FAULT_CAN_ID        0x505
-#define POWERTRAIN_FAULT_CAN_DLC       2
+#define POWERTRAIN_FAULT_CAN_DLC       8
 #define POWERTRAIN_FAULT_MASK          0x01
 
 // 0x505 byte 1 identifies the first BPS limit violated.
+// Bytes 2-3 hold its original unsigned BPS sample (big-endian).
+// Bytes 4-7 hold the reading in V, A magnitude, or degrees C as a
+// little-endian IEEE 754 float. Parameter NONE means no sample is available.
 #define POWERTRAIN_FAULT_PARAMETER_NONE           0x00
 #define POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT  0x01
 #define POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT 0x02

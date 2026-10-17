@@ -25,6 +25,11 @@ class CANPowertrain : public CANManager {
         bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
         uint8_t bps_fault_parameter;
+        uint16_t highest_cell_voltage_raw;
+        uint16_t lowest_cell_voltage_raw;
+        uint16_t pack_current_raw;
+        uint16_t bps_fault_raw;
+        float bps_fault_value;
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
@@ -33,6 +38,7 @@ class CANPowertrain : public CANManager {
         bool isFaultClearCommand(const CAN_message_t& msg) const;
         bool shouldMonitorBpsFaults();
         void handleFaultClearCommand();
+        void captureBpsFault();
         void latchBpsFault();
         void updateBpsFault();
 
