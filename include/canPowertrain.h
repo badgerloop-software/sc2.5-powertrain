@@ -1,5 +1,6 @@
 #pragma once
 
+#include <queue>
 #include "canmanager.h"
 #include "powertrainConfig.h"
 
@@ -12,48 +13,35 @@ struct BpsTelemetry {
 };
 
 struct FaultEvent {
-    uint8_t code;
+    uint8_t status;
+    uint8_t raw;
     uint16_t value;
 };
 
 class CANPowertrain : public CANManager {
     private:
-        BpsTelemetry bps_telemetry;
         bool bps_fault;
-        uint8_t bps_fault_causes;
         bool bps_fault_latched;
-        uint8_t latched_fault_causes;
         bool bps_startup_grace_started;
         bool persistent_fault_initialized;
         bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
-        uint16_t latched_undervoltage_value;
-        uint16_t latched_overvoltage_value;
-        uint16_t latched_overcurrent_value;
-        uint16_t latched_overtemperature_value;
-        FaultEvent fault_queue[5];
-        uint8_t fault_queue_head;
-        uint8_t fault_queue_tail;
-        uint8_t fault_queue_count;
+        std::queue<FaultEvent> fault_events_queue;
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
+        float decodePackCurrent(uint8_t byte_1, uint8_t byte_2) const;
         bool isFaultClearCommand(const CAN_message_t& msg) const;
         bool shouldMonitorBpsFaults();
         void handleFaultClearCommand();
-        void latchBpsFault(uint8_t causes);
-        void enqueueCurrentFaults();
-        FaultEvent dequeueFaultEvent();
-        void updateBpsFault();
+        void latchBpsFault();
 
-        uint8_t handleTempMsg(const CAN_message_t& msg);
-        uint8_t handleElectricalMsg(const CAN_message_t& msg);
+        bool handleTempMsg(const CAN_message_t& msg, FaultEvent& fault_event);
+        bool handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fault_event);
 
     public:
         CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency = DEFAULT_CAN_FREQ);
         void initializePersistentFault();
         void readHandler(CAN_message_t msg);
         void sendPowertrainData();
-        // const BpsTelemetry& getBpsTelemetry() const;
-        // bool hasBpsFault() const;
 };
