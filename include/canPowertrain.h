@@ -25,15 +25,12 @@ class CANPowertrain : public CANManager {
         float decodePackCurrent(uint8_t byte_1, uint8_t byte_2) const;
         bool isFaultClearCommand(const CAN_message_t& msg) const;
         bool shouldMonitorBpsFaults();
-        void handleFaultClearCommand();
-        void latchBpsFault();
 
         bool handleTempMsg(const CAN_message_t& msg, FaultEvent& fault_event);
         bool handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fault_event);
 
     public:
         CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency = DEFAULT_CAN_FREQ);
-        void initializePersistentFault();
         void readHandler(CAN_message_t msg);
         void sendPowertrainData();
 };

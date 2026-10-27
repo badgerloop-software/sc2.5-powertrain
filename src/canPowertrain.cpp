@@ -1,5 +1,6 @@
 #include "canPowertrain.h"
 #include "PowertrainGpio.h"
+#include "Latcher.h"
 #include <EEPROM.h>
 #include <cstring>
 #include <limits>
@@ -30,37 +31,6 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
       clear_on_restart_armed(false),
       first_bps_message_time(0)
       {};
-
-void CANPowertrain::initializePersistentFault() {
-    const bool storage_initialized =
-        EEPROM.read(FAULT_EEPROM_MAGIC_ADDRESS) == FAULT_EEPROM_MAGIC;
-
-    if (!storage_initialized) {
-        EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_CLEAR);
-        EEPROM.update(FAULT_EEPROM_MAGIC_ADDRESS, FAULT_EEPROM_MAGIC);
-        bps_fault_latched = false;
-    } else {
-        const uint8_t stored_state =
-            EEPROM.read(FAULT_EEPROM_STATE_ADDRESS);
-        if (stored_state == FAULT_STATE_CLEAR_ON_RESTART) {
-            EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_CLEAR);
-            bps_fault_latched = false;
-        } else {
-            bps_fault_latched =
-                stored_state == FAULT_STATE_LATCHED;
-            if (!bps_fault_latched &&
-                stored_state != FAULT_STATE_CLEAR) {
-                EEPROM.update(
-                    FAULT_EEPROM_STATE_ADDRESS,
-                    FAULT_STATE_CLEAR
-                );
-            }
-        }
-    }
-
-    clear_on_restart_armed = false;
-    persistent_fault_initialized = true;
-}
 
 bool CANPowertrain::handleTempMsg(const CAN_message_t& msg, FaultEvent& fault_event) {
     uint16_t lowest_temperature = decodeUint16(msg.buf[0], msg.buf[1]);
@@ -125,7 +95,7 @@ bool CANPowertrain::handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fa
 
 void CANPowertrain::readHandler(CAN_message_t msg) {
     if (isFaultClearCommand(msg)) {
-        handleFaultClearCommand();
+        Latcher::handleFaultClearCommand();
         return;
     }
 
@@ -177,26 +147,6 @@ bool CANPowertrain::isFaultClearCommand(const CAN_message_t& msg) const {
     return true;
 }
 
-void CANPowertrain::handleFaultClearCommand() {
-    if (!persistent_fault_initialized) {
-        return;
-    }
-
-    EEPROM.update(
-        FAULT_EEPROM_STATE_ADDRESS,
-        FAULT_STATE_CLEAR_ON_RESTART
-    );
-    clear_on_restart_armed = true;
-}
-
-void CANPowertrain::latchBpsFault() {
-    bps_fault_latched = true;
-    if (persistent_fault_initialized) {
-        EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_LATCHED);
-    }
-    clear_on_restart_armed = false;
-}
-
 bool CANPowertrain::shouldMonitorBpsFaults() {
     const unsigned long current_time = millis();
     if (!bps_startup_grace_started) {
@@ -211,7 +161,7 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
 void CANPowertrain::sendPowertrainData() {
     const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
     if (bps_fault && (!bps_fault_latched || clear_on_restart_armed)) {
-        latchBpsFault();
+        Latcher::latchBpsFault();
     }
     const bool active_fault = estop_pressed || bps_fault_latched;
     PowertrainGPIO::set_mcu_batt_en(!active_fault);
