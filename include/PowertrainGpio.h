@@ -22,7 +22,7 @@
 #define MCU_BATT_EN                 PA8
 
 namespace PowertrainGPIO {
-    // MUST CALL THIS BEFORE ANY OTHER GPIO FUNCTIONS
+    // Must be called before any other GPIO function; misuse reports an error and halts.
     void initIO();
 
     // analog signals
