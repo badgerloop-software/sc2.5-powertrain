@@ -4,14 +4,6 @@
 #include "canmanager.h"
 #include "powertrainConfig.h"
 
-struct BpsTelemetry {
-    float highest_cell_voltage;
-    float lowest_cell_voltage;
-    float pack_current;
-    uint16_t lowest_temperature;
-    uint16_t highest_temperature;
-};
-
 struct FaultEvent {
     uint8_t status;
     uint8_t raw;
