@@ -6,17 +6,13 @@
 
 struct FaultEvent {
     uint8_t status;
-    uint8_t raw;
-    uint16_t value;
+    uint16_t raw;
+    float value;
 };
 
 class CANPowertrain : public CANManager {
     private:
-        bool bps_fault;
-        bool bps_fault_latched;
         bool bps_startup_grace_started;
-        bool persistent_fault_initialized;
-        bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
         std::queue<FaultEvent> fault_events_queue;
 

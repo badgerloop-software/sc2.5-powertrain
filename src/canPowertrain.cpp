@@ -9,26 +9,9 @@ static_assert(sizeof(float) == sizeof(uint32_t) &&
               std::numeric_limits<float>::is_iec559,
               "Fault CAN readings require IEEE 754 float32");
 
-namespace {
-constexpr int FAULT_EEPROM_MAGIC_ADDRESS = 0;
-constexpr int FAULT_EEPROM_STATE_ADDRESS = 1;
-constexpr uint8_t FAULT_EEPROM_MAGIC = 0xB5;
-constexpr uint8_t FAULT_STATE_CLEAR = 0x00;
-constexpr uint8_t FAULT_STATE_LATCHED = 0xA5;
-constexpr uint8_t FAULT_STATE_CLEAR_ON_RESTART = 0x5A;
-
-constexpr uint8_t FAULT_CLEAR_PAYLOAD[FAULT_CLEAR_CAN_DLC] = {
-    0x03, 0x7F, 0x20, 0x22, 0x00, 0x00, 0x00, 0x00
-};
-}
-
 CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
     : CANManager(canPort, pins, frequency),
-      bps_fault(false),
-      bps_fault_latched(false),
       bps_startup_grace_started(false),
-      persistent_fault_initialized(false),
-      clear_on_restart_armed(false),
       first_bps_message_time(0)
       {};
 
@@ -63,27 +46,27 @@ bool CANPowertrain::handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fa
     fault_event.value = 0.0f;
 
     if (shouldMonitorBpsFaults()) {
-        if (highest_cell_voltage_raw > BPS_CELL_VOLTAGE_MAX_V) {
+        if (highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
             fault_event.raw = highest_cell_voltage_raw;
             fault_event.value = highest_cell_voltage;
             fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT;
             return true;
-        } else if (lowest_cell_voltage_raw > BPS_CELL_VOLTAGE_MAX_V) {
+        } else if (lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
             fault_event.raw = lowest_cell_voltage_raw;
             fault_event.value = lowest_cell_voltage;
             fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT;
             return true;
-        } else if (lowest_cell_voltage_raw < BPS_CELL_VOLTAGE_MIN_V) {
+        } else if (lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
             fault_event.raw = lowest_cell_voltage_raw;
             fault_event.value = lowest_cell_voltage;
             fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT;
             return true;
-        } else if (highest_cell_voltage_raw < BPS_CELL_VOLTAGE_MIN_V) {
+        } else if (highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
             fault_event.raw = highest_cell_voltage_raw;
             fault_event.value = highest_cell_voltage;
             fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT;
             return true;
-        } else if (pack_current_raw > BPS_PACK_CURRENT_MAX_A) {
+        } else if (pack_current > BPS_PACK_CURRENT_MAX_A) {
             fault_event.raw = pack_current_raw;
             fault_event.value = pack_current;
             fault_event.status = POWERTRAIN_FAULT_PARAMETER_OVERCURRENT;
@@ -140,7 +123,7 @@ bool CANPowertrain::isFaultClearCommand(const CAN_message_t& msg) const {
     }
 
     for (uint8_t i = 0; i < FAULT_CLEAR_CAN_DLC; ++i) {
-        if (msg.buf[i] != FAULT_CLEAR_PAYLOAD[i]) {
+        if (msg.buf[i] != Latcher::FAULT_CLEAR_PAYLOAD[i]) {
             return false;
         }
     }
@@ -160,12 +143,14 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
 
 void CANPowertrain::sendPowertrainData() {
     const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
-    if (bps_fault && (!bps_fault_latched || clear_on_restart_armed)) {
+    const bool bps_fault_active = !fault_events_queue.empty();
+    const bool active_fault = estop_pressed || bps_fault_active;
+    if (bps_fault_active && !Latcher::isBpsFaultLatched()) {
         Latcher::latchBpsFault();
     }
-    const bool active_fault = estop_pressed || bps_fault_latched;
-    PowertrainGPIO::set_mcu_batt_en(!active_fault);
+
     uint8_t status = fault_events_queue.empty() ? 0 : POWERTRAIN_FAULT_MASK;
+    PowertrainGPIO::set_mcu_batt_en(!active_fault);
     uint8_t fault_payload[POWERTRAIN_FAULT_CAN_DLC]{};
     fault_payload[0] = status;
     if (status & POWERTRAIN_FAULT_MASK) {

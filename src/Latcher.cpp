@@ -42,12 +42,12 @@ void Latcher::handleFaultClearCommand() {
     );
 }
 
-uint8_t Latcher::getPersistentFaults() {
+bool Latcher::isBpsFaultLatched() {
     requireInitialized();
-    return EEPROM.read(FAULT_EEPROM_STATE_ADDRESS);
+    return EEPROM.read(FAULT_EEPROM_STATE_ADDRESS) == FAULT_STATE_LATCHED;
 }
 
-void Latcher::latchBpsFault(uint8_t causes) {
+void Latcher::latchBpsFault() {
     requireInitialized();
     EEPROM.update(FAULT_EEPROM_STATE_ADDRESS, FAULT_STATE_LATCHED);
 }
