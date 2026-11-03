@@ -1,46 +1,51 @@
-#ifndef __CAN_POWERTRAIN_H__
-#define __CAN_POWERTRAIN_H__
+#pragma once
 
+#include <queue>
 #include "canmanager.h"
-#include "IOManagement.h"
 #include "powertrainConfig.h"
 
-struct BpsTelemetry {
-    float highest_cell_voltage;
-    float lowest_cell_voltage;
-    float pack_current;
-    uint16_t lowest_temperature;
-    uint16_t highest_temperature;
+struct FaultEvent {
+    uint8_t status;
+    uint16_t raw;
+    float value;
 };
 
 class CANPowertrain : public CANManager {
     private:
-        BpsTelemetry bps_telemetry;
-        bool bps_fault;
-        bool bps_fault_latched;
-        bool received_bps_temperature;
-        bool received_bps_electrical;
         bool bps_startup_grace_started;
-        bool persistent_fault_initialized;
-        bool clear_on_restart_armed;
         unsigned long first_bps_message_time;
+        bool fault_detected;
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
-        bool isBpsTelemetryOutOfRange() const;
+        float decodePackCurrent(uint8_t byte_1, uint8_t byte_2) const;
         bool isFaultClearCommand(const CAN_message_t& msg) const;
         bool shouldMonitorBpsFaults();
-        void handleFaultClearCommand();
-        void latchBpsFault();
-        void updateBpsFault();
+
+        /**
+         * @param msg The CAN message to check for temp faults.
+         * @return Returns true if the message contains a fault; otherwise returns false.
+         */
+        bool handleTempMsg(const CAN_message_t& msg);
+
+        /**
+         * @param msg The CAN message to check for electrical faults.
+         * @return Returns true if the message contains a fault; otherwise returns false.
+         */
+        bool handleElectricalMsg(const CAN_message_t& msg);
 
     public:
         CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency = DEFAULT_CAN_FREQ);
-        void initializePersistentFault();
-        void readHandler(CAN_message_t msg);
-        void sendPowertrainData();
-        const BpsTelemetry& getBpsTelemetry() const;
-        bool hasBpsFault() const;
-};
 
-#endif
+        /**
+         * @param msg The CAN message to process. This function will check for fault clear commands and handle temperature and electrical messages.
+         * If a fault is detected, it will be added to the fault_events_queue.
+         */
+        void readHandler(CAN_message_t msg);
+
+        /**
+         * @brief Sends powertrain data over CAN. This function is responsible for packaging and sending the relevant powertrain data to the CAN bus.
+         * It should be called periodically to ensure that the powertrain data is transmitted at the desired frequency.
+         */
+        void sendPowertrainData();
+};

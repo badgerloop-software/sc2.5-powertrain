@@ -1,11 +1,19 @@
 
-This directory is intended for PlatformIO Test Runner and project tests.
+Firmware fault snapshot regression tests
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+Run from the repository root:
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+    python -m unittest discover -s test -p test_firmware_faults.py -v
+
+The runner compiles the production src/canPowertrain.cpp with lightweight
+host fakes for CAN, Arduino timing, EEPROM, and hardware-only headers.
+It uses the real include/IOManagement.h and firmware configuration.
+Requires Python and a C++17 g++ or clang++ compiler. Set CXX to the compiler
+executable path if it is not on PATH. Build artifacts use a temporary directory.
+No MCU, CAN adapter, PlatformIO installation, or Python packages are required.
+
+Coverage includes the CAN 0x505 eight-byte wire contract, exact raw BPS
+codes, engineering values, startup grace and inclusive limits, misordered
+high/low fields, current codes on both sides of 0x8000, transient faults
+that recover before transmission, immutable first-fault snapshots,
+EEPROM restart behavior, emergency stop, and malformed input frames.
