@@ -14,7 +14,7 @@ class CANPowertrain : public CANManager {
     private:
         bool bps_startup_grace_started;
         unsigned long first_bps_message_time;
-        std::queue<FaultEvent> fault_events_queue;
+        bool fault_detected;
 
         uint16_t decodeUint16(uint8_t byte_1, uint8_t byte_2) const;
         float decodeCellVoltage(uint8_t byte_1, uint8_t byte_2) const;
@@ -24,17 +24,15 @@ class CANPowertrain : public CANManager {
 
         /**
          * @param msg The CAN message to check for temp faults.
-         * @param fault_event A reference to a FaultEvent struct that will be populated if a fault is detected.
          * @return Returns true if the message contains a fault; otherwise returns false.
          */
-        bool handleTempMsg(const CAN_message_t& msg, FaultEvent& fault_event);
+        bool handleTempMsg(const CAN_message_t& msg);
 
         /**
          * @param msg The CAN message to check for electrical faults.
-         * @param fault_event A reference to a FaultEvent struct that will be populated if a fault is detected.
          * @return Returns true if the message contains a fault; otherwise returns false.
          */
-        bool handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fault_event);
+        bool handleElectricalMsg(const CAN_message_t& msg);
 
     public:
         CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency = DEFAULT_CAN_FREQ);

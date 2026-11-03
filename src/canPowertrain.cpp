@@ -15,25 +15,19 @@ CANPowertrain::CANPowertrain(CAN_TypeDef* canPort, CAN_PINS pins, int frequency)
       first_bps_message_time(0)
       {};
 
-bool CANPowertrain::handleTempMsg(const CAN_message_t& msg, FaultEvent& fault_event) {
+bool CANPowertrain::handleTempMsg(const CAN_message_t& msg) {
     uint16_t lowest_temperature = decodeUint16(msg.buf[0], msg.buf[1]);
     uint16_t highest_temperature = decodeUint16(msg.buf[2], msg.buf[3]);
 
-    fault_event.raw = 0;
-    fault_event.value = 0.0f;
-
     if (shouldMonitorBpsFaults()) {
         if (highest_temperature > BPS_TEMPERATURE_MAX_C) {
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_OVERTEMP;
-            fault_event.raw = highest_temperature;
-            fault_event.value = static_cast<float>(highest_temperature);
             return true;
         } 
     }
     return false;
 }
 
-bool CANPowertrain::handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fault_event) {
+bool CANPowertrain::handleElectricalMsg(const CAN_message_t& msg) {
     uint16_t highest_cell_voltage_raw = decodeUint16(msg.buf[0], msg.buf[1]);
     uint16_t lowest_cell_voltage_raw = decodeUint16(msg.buf[2], msg.buf[3]);
     uint16_t pack_current_raw = decodeUint16(msg.buf[4], msg.buf[5]);
@@ -42,36 +36,12 @@ bool CANPowertrain::handleElectricalMsg(const CAN_message_t& msg, FaultEvent& fa
     float lowest_cell_voltage = decodeCellVoltage(msg.buf[2], msg.buf[3]);
     float pack_current = decodePackCurrent(msg.buf[4], msg.buf[5]);
 
-    fault_event.raw = 0;
-    fault_event.value = 0.0f;
-
     if (shouldMonitorBpsFaults()) {
-        if (highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
-            fault_event.raw = highest_cell_voltage_raw;
-            fault_event.value = highest_cell_voltage;
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT;
-            return true;
-        } else if (lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V) {
-            fault_event.raw = lowest_cell_voltage_raw;
-            fault_event.value = lowest_cell_voltage;
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_OVERVOLT;
-            return true;
-        } else if (lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
-            fault_event.raw = lowest_cell_voltage_raw;
-            fault_event.value = lowest_cell_voltage;
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT;
-            return true;
-        } else if (highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V) {
-            fault_event.raw = highest_cell_voltage_raw;
-            fault_event.value = highest_cell_voltage;
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_CELL_UNDERVOLT;
-            return true;
-        } else if (pack_current > BPS_PACK_CURRENT_MAX_A) {
-            fault_event.raw = pack_current_raw;
-            fault_event.value = pack_current;
-            fault_event.status = POWERTRAIN_FAULT_PARAMETER_OVERCURRENT;
-            return true;
-        }
+        return highest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
+               lowest_cell_voltage > BPS_CELL_VOLTAGE_MAX_V ||
+               lowest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
+               highest_cell_voltage < BPS_CELL_VOLTAGE_MIN_V ||
+               pack_current > BPS_PACK_CURRENT_MAX_A;
     }
     return false;
 }
@@ -82,18 +52,12 @@ void CANPowertrain::readHandler(CAN_message_t msg) {
         return;
     }
 
-    FaultEvent fault_event;
-    bool fault_detected = false;
     if (msg.id == BPS_TEMPERATURE_CAN_ID &&
         msg.len == BPS_TEMPERATURE_CAN_DLC) {
-        fault_detected = handleTempMsg(msg, fault_event);
+        fault_detected |= handleTempMsg(msg);
     } else if (msg.id == BPS_ELECTRICAL_CAN_ID &&
                msg.len == BPS_ELECTRICAL_CAN_DLC) {
-        fault_detected = handleElectricalMsg(msg, fault_event);
-    }
-
-    if (fault_detected) {
-        fault_events_queue.push(fault_event);
+        fault_detected |= handleElectricalMsg(msg);
     }
 }
 
@@ -143,27 +107,14 @@ bool CANPowertrain::shouldMonitorBpsFaults() {
 
 void CANPowertrain::sendPowertrainData() {
     const bool estop_pressed = !PowertrainGPIO::get_estop_mcu();
-    const bool bps_fault_active = !fault_events_queue.empty();
-    const bool active_fault = estop_pressed || bps_fault_active;
-    if (bps_fault_active && !Latcher::isBpsFaultLatched()) {
+    const bool active_fault = estop_pressed || fault_detected;
+    if (fault_detected && !Latcher::isBpsFaultLatched()) {
         Latcher::latchBpsFault();
     }
 
-    uint8_t status = fault_events_queue.empty() ? 0 : POWERTRAIN_FAULT_MASK;
+    uint8_t status = fault_detected ? POWERTRAIN_FAULT_MASK : 0;
     PowertrainGPIO::set_mcu_batt_en(!active_fault);
-    uint8_t fault_payload[POWERTRAIN_FAULT_CAN_DLC]{};
-    fault_payload[0] = status;
-    if (status & POWERTRAIN_FAULT_MASK) {
-        fault_payload[1] = fault_events_queue.front().status;
-        fault_payload[2] = fault_events_queue.front().raw >> 8;
-        fault_payload[3] = static_cast<uint8_t>(fault_events_queue.front().raw);
-        uint32_t value_bits = 0;
-        std::memcpy(&value_bits, &fault_events_queue.front().value, sizeof(value_bits));
-        for (uint8_t i = 0; i < sizeof(value_bits); ++i) {
-            fault_payload[4 + i] = static_cast<uint8_t>(value_bits >> (8 * i));
-        }
-        fault_events_queue.pop();
-    }
+    
     float i_12v = PowertrainGPIO::get_i_12v();
     float v_12v = PowertrainGPIO::get_v_12v();
     float supp_i = PowertrainGPIO::get_supp_i();
@@ -178,7 +129,7 @@ void CANPowertrain::sendPowertrainData() {
     this->sendMessage(0x504, (void*)&supp_v, sizeof(float));
     this->sendMessage(
         POWERTRAIN_FAULT_CAN_ID,
-        (void*)fault_payload,
+        (void*)status,
         POWERTRAIN_FAULT_CAN_DLC
     );
 }
