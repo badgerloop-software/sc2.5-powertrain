@@ -132,4 +132,8 @@ void CANPowertrain::sendPowertrainData() {
         (void*)status,
         POWERTRAIN_FAULT_CAN_DLC
     );
+
+    // Send on message for debugging
+    uint8_t powertrain_on = 1;
+    this->sendMessage(0x599, (void*)&powertrain_on, sizeof(uint8_t));
 }
