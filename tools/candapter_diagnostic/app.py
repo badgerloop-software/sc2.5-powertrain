@@ -18,11 +18,15 @@ from protocol import (
     CANFrame,
     FAULT_CLEAR_CAN_ID,
     FAULT_CLEAR_PAYLOAD,
+    FAULT_CODE_NAMES,
     POWERTRAIN_FAULT_CAN_ID,
+    POWERTRAIN_FAULT_CAN_DLC,
     TIME_SERIES_SIGNALS,
     decode_frame,
     decoded_time_series,
     fault_status_rows,
+    format_fault_raw_reading,
+    format_fault_reading,
     pack_soc_trend,
     parse_hex_data,
 )
@@ -60,7 +64,13 @@ def format_decoded_fields(decoded: dict) -> str:
     fields = decoded["fields"]
     formatted = []
     for name, value in fields.items():
-        if "voltage" in name.lower() and isinstance(value, float):
+        if name == "Reading unit":
+            continue
+        if name == "Reading at fault":
+            rendered = format_fault_reading(fields)
+        elif name == "Raw reading at fault":
+            rendered = format_fault_raw_reading(fields)
+        elif "voltage" in name.lower() and isinstance(value, float):
             rendered = f"{value:.4f} V"
         elif "current" in name.lower() and isinstance(value, float):
             rendered = f"{value:.1f} A"
@@ -80,6 +90,8 @@ if "event_log" not in st.session_state:
     st.session_state.event_log = []
 if "fault_capture_active" not in st.session_state:
     st.session_state.fault_capture_active = False
+if "fault_capture_snapshot_saved" not in st.session_state:
+    st.session_state.fault_capture_snapshot_saved = False
 
 
 st.title("SC2 CAN Diagnostics")
@@ -221,19 +233,47 @@ if BPS_STATUS_CAN_ID in latest:
         soc = soc_message["fields"].get("State of charge")
 soc_trend = pack_soc_trend(frames)
 
+powertrain = (
+    decode_frame(latest[POWERTRAIN_FAULT_CAN_ID])
+    if POWERTRAIN_FAULT_CAN_ID in latest
+    else None
+)
+fault_snapshot_available = bool(
+    powertrain
+    and not powertrain["error"]
+    and powertrain["fields"]["Fault active"]
+    and isinstance(powertrain["fields"]["Raw reading at fault"], int)
+)
 fault_rows = fault_status_rows(latest)
 fault_count = sum(row["Status"] == "FAULT" for row in fault_rows)
 unknown_count = sum(row["Status"] == "UNKNOWN" for row in fault_rows)
 fault_active = fault_count > 0
-if fault_active and not st.session_state.fault_capture_active and frames:
+if not fault_active:
+    st.session_state.fault_capture_snapshot_saved = False
+if fault_active and frames and (
+    not st.session_state.fault_capture_active
+    or (
+        fault_snapshot_available
+        and not st.session_state.fault_capture_snapshot_saved
+    )
+):
     try:
         fault_capture_path = save_capture(
             frames,
             filename_prefix="fault_capture",
         )
+        snapshot_detail = ""
+        if fault_snapshot_available:
+            fields = powertrain["fields"]
+            snapshot_detail = (
+                f"; {fields['Violated parameter']}: "
+                f"{format_fault_reading(fields)}, "
+                f"raw {format_fault_raw_reading(fields)}"
+            )
+            st.session_state.fault_capture_snapshot_saved = True
         st.session_state.event_log.append(
             f"Automatically saved {len(frames)} frames after fault "
-            f"detection to {fault_capture_path.name}"
+            f"detection to {fault_capture_path.name}{snapshot_detail}"
         )
         st.warning(
             "Fault detected: automatically saved "
@@ -271,12 +311,6 @@ with status_tab:
         if BPS_ELECTRICAL_CAN_ID in latest
         else None
     )
-    powertrain = (
-        decode_frame(latest[POWERTRAIN_FAULT_CAN_ID])
-        if POWERTRAIN_FAULT_CAN_ID in latest
-        else None
-    )
-
     display_soc = max(0.0, min(100.0, soc)) if soc is not None else 0.0
     soc_text = f"{soc:.1f}%" if soc is not None else "—%"
     direction = soc_trend["state"]
@@ -362,19 +396,45 @@ with status_tab:
 
     with powertrain_col:
         with st.container(border=True):
-            st.markdown("#### Powertrain · `0x505`")
+            st.markdown("#### Fault code · `0x505`")
             if powertrain and not powertrain["error"]:
-                is_fault = powertrain["fields"]["Fault active"]
+                fields = powertrain["fields"]
+                is_fault = fields["Fault code"] != 0
                 if is_fault:
                     st.error("FAULT ACTIVE")
                 else:
                     st.success("HEALTHY")
+<<<<<<< HEAD
+                st.metric("Fault code", f"0x{fields['Fault code']:02X}")
+                st.caption(fields["Fault"])
+=======
                 st.metric("Fault bit", "1" if is_fault else "0")
+                if is_fault:
+                    fields = powertrain["fields"]
+                    st.write(
+                        "Violated parameter: "
+                        f"{fields['Violated parameter']}"
+                    )
+                    st.metric(
+                        "Reading at fault",
+                        format_fault_reading(fields),
+                    )
+                    st.caption(
+                        f"Raw reading: {format_fault_raw_reading(fields)}"
+                    )
+                    if fields["Fault limit"] != "Not reported":
+                        st.caption(f"Configured limit: {fields['Fault limit']}")
+                    st.caption(
+                        "Captured when the BPS fault latched; held until "
+                        "reset. Legacy frames, estop-only faults, and "
+                        "latches restored after restart have no reading."
+                    )
                 st.caption(
                     "Combined BPS latch or active estop status"
                 )
+>>>>>>> 314127a11156ff28d5adb45ac63cad5e44ffd8bf
             else:
-                st.info("Waiting for powertrain status")
+                st.info("Waiting for fault code")
 
     st.divider()
     details_col, reset_col = st.columns([2, 1], gap="large")
